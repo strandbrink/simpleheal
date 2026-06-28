@@ -1,0 +1,6 @@
+package-as: SimpleHeal
+
+ignore:
+  - deploy.bat
+  - README.md
+  - .pkgmeta
