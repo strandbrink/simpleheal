@@ -1,5 +1,32 @@
 # SimpleHeal Changelog
 
+## v1.3.0
+- Two-tab settings panel: Spells & Profiles / Settings
+- Bar texture themes (Minimalist, Default, Flat, Blizzard, Smooth)
+- Layout modes: columns by role, rows by role, or compact grid
+- Ctrl/Alt click modifiers - 4 extra spell bindings
+- Font size slider for frame text
+- Show/hide pets checkbox
+- Test mode (/sh test or Test button) - preview with 15 fake players
+- Mouseover highlight on frames
+- Dead/offline players sorted last in grid layout
+- Presets and checkboxes now apply instantly (no Save needed)
+- Tooltips on all settings controls
+- Welcome message with quick-start guide on first login
+- All sliders update frames live while dragging
+- Performance: cached lookup tables, class colors and buff parsing
+- Fixed own pet not showing in party mode
+
+## v1.2.0
+- Added "Only show in group/raid" option
+- Added opacity slider
+- Added name truncation for long names
+- Added out-of-combat indicator
+- Added import/export of spell setups
+- DPS splits into multiple columns (max 5 per column)
+- Fixed profile switching not updating spells
+- Fixed StaticPopup compatibility with TBC Anniversary client
+
 ## v1.1.0
 - Added profile system with save/load/delete and undo support
 - Added "Only show in group/raid" option
