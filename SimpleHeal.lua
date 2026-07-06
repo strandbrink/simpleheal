@@ -150,7 +150,7 @@ local PRESETS = {
 
 local GAP         = 2
 local OOR_ALPHA   = 0.4
-local UPDATE_HZ   = 0.1
+local UPDATE_HZ   = 0.3
 local BUFF_SIZE   = 7
 local BUFF_GAP    = 1
 
@@ -162,6 +162,8 @@ local elapsed     = 0
 local pendingApply = false
 local canCastBuff  = {}  -- [slot] = true/false, cached on login/spec change
 local buffParseCache = {}
+local knownSpellCache = {}  -- [name] = true/false, wiped on SPELLS_CHANGED
+local scratchBuffs = {}     -- reusable per-Refresh buff name set
 
 -- Map player class to a default preset
 local CLASS_PRESET = {
@@ -251,6 +253,16 @@ local function Spell(key)
     return nil
 end
 
+-- Cached "does the player know this spell" lookup
+local function KnownSpell(name)
+    local v = knownSpellCache[name]
+    if v == nil then
+        v = GetSpellInfo(name) and true or false
+        knownSpellCache[name] = v
+    end
+    return v
+end
+
 -- Check if the player knows any of the comma-separated spell names
 local function KnowsAnySpell(buffStr)
     if not buffStr or buffStr == "" then return false end
@@ -265,6 +277,7 @@ end
 local function UpdateCanCastBuffs()
     if not db then return end
     wipe(buffParseCache)
+    wipe(knownSpellCache)
     for slot = 1, 4 do
         canCastBuff[slot] = KnowsAnySpell(db.buffs[slot])
     end
@@ -432,6 +445,20 @@ local function Refresh(f)
     local isDead    = UnitIsDeadOrGhost(unit)
     local isOffline = not UnitIsConnected(unit)
     local cr, cg, cb = ClassColor(unit)
+    local darkMode = (db.colorMode or 1) == 2
+
+    if darkMode and not isDead and not isOffline then
+        f.name:SetTextColor(cr, cg, cb)
+    else
+        f.name:SetTextColor(1, 1, 1)
+    end
+
+    -- Target highlight
+    if UnitIsUnit(unit, "target") then
+        f.targetBorder:Show()
+    else
+        f.targetBorder:Hide()
+    end
 
     -- Rez indicator
     local hasRez = false
@@ -467,13 +494,21 @@ local function Refresh(f)
         f.deficit:SetTextColor(0.5, 0.5, 0.5)
         f.statusText:Hide()
     elseif isAFK then
-        f.hp:SetStatusBarColor(cr * 0.5, cg * 0.5, cb * 0.5)
+        if darkMode then
+            f.hp:SetStatusBarColor(0.15, 0.15, 0.15)
+        else
+            f.hp:SetStatusBarColor(cr * 0.5, cg * 0.5, cb * 0.5)
+        end
         f.deficit:SetText("")
         f.statusText:SetText("AFK")
         f.statusText:SetTextColor(0.8, 0.8, 0.0)
         f.statusText:Show()
     else
-        f.hp:SetStatusBarColor(cr, cg, cb)
+        if darkMode then
+            f.hp:SetStatusBarColor(0.25, 0.25, 0.25)
+        else
+            f.hp:SetStatusBarColor(cr, cg, cb)
+        end
         local diff = hp - hpMax
         if diff < 0 then
             f.deficit:SetText(diff)
@@ -606,25 +641,15 @@ local function Refresh(f)
         f.raidIcon:Hide()
     end
 
-    -- Buff indicators (only for buffs the player can cast)
-    for slot = 1, 4 do
-        local ind = f.buffInd[slot]
-        if not canCastBuff[slot] or isDead or isOffline then
-            ind:Hide()
-        elseif HasBuff(unit, db.buffs[slot]) then
-            ind:Hide()
-        else
-            ind:Show()
-        end
-    end
-
-    -- Buff/HoT tracking (player-cast buffs with a duration)
+    -- Single buff pass: collect buff names + HoT tracking in one loop
+    wipe(scratchBuffs)
     local hotIdx = 0
     if not isDead and not isOffline then
         for i = 1, 40 do
             local bName, bIcon, bCount, _, bDur, bExp = UnitBuff(unit, i)
             if not bName then break end
-            if bDur and bDur > 0 and bExp and GetSpellInfo(bName) then
+            scratchBuffs[bName] = true
+            if bDur and bDur > 0 and bExp and KnownSpell(bName) then
                 hotIdx = hotIdx + 1
                 if hotIdx <= 6 then
                     local hot = f.hots[hotIdx]
@@ -649,12 +674,24 @@ local function Refresh(f)
         f.hots[h]:Hide()
     end
 
+    -- Buff indicators (only for buffs the player can cast)
+    for slot = 1, 4 do
+        local ind = f.buffInd[slot]
+        if not canCastBuff[slot] or isDead or isOffline then
+            ind:Hide()
+        else
+            local hasAny = false
+            for name in pairs(ParseBuffStr(db.buffs[slot])) do
+                if scratchBuffs[name] then hasAny = true break end
+            end
+            if hasAny then ind:Hide() else ind:Show() end
+        end
+    end
+
     -- Missing Thorns text for tanks
     if f.thornsText then
-        local isTank = GetUnitRole(unit) == "TANK"
-        local knowsThorns = GetSpellInfo("Thorns") ~= nil
-        local hasThorns = HasBuff(unit, "Thorns")
-        if isTank and knowsThorns and not hasThorns and not isDead and not isOffline then
+        if GetUnitRole(unit) == "TANK" and KnownSpell("Thorns")
+            and not scratchBuffs["Thorns"] and not isDead and not isOffline then
             f.thornsText:Show()
         else
             f.thornsText:Hide()
@@ -774,6 +811,32 @@ local function MakeFrame(unit, parent)
     mouseHl:SetPoint("TOPLEFT", 1, -1)
     mouseHl:SetPoint("BOTTOMRIGHT", -1, 1)
     mouseHl:SetColorTexture(1, 1, 1, 0.18)
+
+    -- Target border (white frame around current target)
+    local targetBorder = CreateFrame("Frame", nil, f)
+    targetBorder:SetPoint("TOPLEFT", -2, 2)
+    targetBorder:SetPoint("BOTTOMRIGHT", 2, -2)
+    targetBorder:SetFrameLevel(f:GetFrameLevel() + 3)
+    targetBorder:Hide()
+    f.targetBorder = targetBorder
+
+    local TB_W = 2
+    local tbTop = targetBorder:CreateTexture(nil, "OVERLAY")
+    tbTop:SetPoint("TOPLEFT"); tbTop:SetPoint("TOPRIGHT")
+    tbTop:SetHeight(TB_W)
+    tbTop:SetColorTexture(1, 1, 1, 0.9)
+    local tbBot = targetBorder:CreateTexture(nil, "OVERLAY")
+    tbBot:SetPoint("BOTTOMLEFT"); tbBot:SetPoint("BOTTOMRIGHT")
+    tbBot:SetHeight(TB_W)
+    tbBot:SetColorTexture(1, 1, 1, 0.9)
+    local tbLeft = targetBorder:CreateTexture(nil, "OVERLAY")
+    tbLeft:SetPoint("TOPLEFT"); tbLeft:SetPoint("BOTTOMLEFT")
+    tbLeft:SetWidth(TB_W)
+    tbLeft:SetColorTexture(1, 1, 1, 0.9)
+    local tbRight = targetBorder:CreateTexture(nil, "OVERLAY")
+    tbRight:SetPoint("TOPRIGHT"); tbRight:SetPoint("BOTTOMRIGHT")
+    tbRight:SetWidth(TB_W)
+    tbRight:SetColorTexture(1, 1, 1, 0.9)
 
     -- Incoming heal bar (lighter overlay on health bar)
     local incHeal = hp:CreateTexture(nil, "ARTWORK", nil, 1)
@@ -1668,8 +1731,33 @@ local function CreateConfigPanel()
         end
     end)
 
+    -- Color mode dropdown
+    local COLOR_MODES = { "Class-colored bars", "Dark bars, colored names" }
+    local colorLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    colorLabel:SetPoint("TOPLEFT", padX, sliderTop - 216)
+    colorLabel:SetText("Colors")
+
+    local colorDrop = CreateFrame("Frame", "SimpleHealColorDrop", t2, "UIDropDownMenuTemplate")
+    colorDrop:SetPoint("LEFT", colorLabel, "RIGHT", 14, -2)
+    UIDropDownMenu_SetWidth(colorDrop, 150)
+    UIDropDownMenu_SetText(colorDrop, COLOR_MODES[db.colorMode or 1])
+    UIDropDownMenu_Initialize(colorDrop, function(self, level)
+        for i, name in ipairs(COLOR_MODES) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = name
+            info.func = function()
+                db.colorMode = i
+                UIDropDownMenu_SetText(colorDrop, name)
+                CloseDropDownMenus()
+                if not InCombatLockdown() then Layout() end
+            end
+            info.checked = (i == (db.colorMode or 1))
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
     -- Checkboxes
-    local cbTop = sliderTop - 222
+    local cbTop = sliderTop - 252
 
     local function MakeCheckbox(label, x, y)
         local cb = CreateFrame("CheckButton", nil, t2, "UICheckButtonTemplate")
@@ -1861,6 +1949,21 @@ local function CreateConfigPanel()
         profDrop:Hide()
         p:Hide()
         print("|cff00ff00SimpleHeal:|r Settings saved!")
+
+        -- Warn about spell names not found in the spellbook
+        local unknown = {}
+        for _, binding in ipairs(BINDINGS) do
+            local sp = db.spells[binding.key]
+            if sp and sp ~= "" then
+                local base = sp:match("^(.-)%s*%(") or sp  -- strip "(Rank X)"
+                if not GetSpellInfo(base) then
+                    unknown[#unknown + 1] = sp
+                end
+            end
+        end
+        if #unknown > 0 then
+            print("|cff00ff00SimpleHeal:|r |cffff5555Warning:|r these spells are not in your spellbook (typo or not learned yet): " .. table.concat(unknown, ", "))
+        end
     end)
 
     local testBtn = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
@@ -2296,11 +2399,18 @@ LayoutTestFrames = function()
     local mode = db.layoutMode or 1
     local perGroup = (mode == 2) and 8 or 5
 
+    local darkMode = (db.colorMode or 1) == 2
     for i, f in ipairs(testFrames) do
         f:SetSize(fw, fh)
         f.hp:SetStatusBarTexture(barTex)
         local cc = RAID_CLASS_COLORS[TEST_UNITS[i].class]
-        f.hp:SetStatusBarColor(cc.r, cc.g, cc.b)
+        if darkMode then
+            f.hp:SetStatusBarColor(0.25, 0.25, 0.25)
+            f.name:SetTextColor(cc.r, cc.g, cc.b)
+        else
+            f.hp:SetStatusBarColor(cc.r, cc.g, cc.b)
+            f.name:SetTextColor(1, 1, 1)
+        end
         f.name:SetFont(FONT_PATH, size, "OUTLINE")
         f.deficit:SetFont(FONT_PATH, size, "OUTLINE")
         f:ClearAllPoints()
@@ -2473,6 +2583,7 @@ local function Init()
     if SimpleHealDB.layoutMode == nil then SimpleHealDB.layoutMode = 1 end
     if SimpleHealDB.showPets == nil then SimpleHealDB.showPets = true end
     if SimpleHealDB.fontSize == nil then SimpleHealDB.fontSize = 10 end
+    if SimpleHealDB.colorMode == nil then SimpleHealDB.colorMode = 1 end
     if not SimpleHealDB.profiles then SimpleHealDB.profiles = {} end
     if not SimpleHealDB.activeProfile then SimpleHealDB.activeProfile = "Default" end
     db = SimpleHealDB
@@ -2551,9 +2662,19 @@ SafeReg("SPELLS_CHANGED")
 SafeReg("CHARACTER_POINTS_CHANGED")
 SafeReg("PLAYER_TALENT_UPDATE")
 SafeReg("ACTIVE_TALENT_GROUP_CHANGED")
+SafeReg("PLAYER_TARGET_CHANGED")
 SafeReg("READY_CHECK")
 SafeReg("READY_CHECK_CONFIRM")
 SafeReg("READY_CHECK_FINISHED")
+
+-- Unit events only need to refresh the affected unit's frame
+local UNIT_EVENTS = {
+    UNIT_HEALTH = true,
+    UNIT_MAXHEALTH = true,
+    UNIT_CONNECTION = true,
+    UNIT_NAME_UPDATE = true,
+    UNIT_AURA = true,
+}
 
 ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
@@ -2566,6 +2687,15 @@ ev:SetScript("OnEvent", function(_, event, arg1)
 
     if event == "PLAYER_LOGOUT" then
         SavePosition()
+        return
+    end
+
+    -- Fast path: unit event -> refresh only that unit's frame
+    if UNIT_EVENTS[event] then
+        if arg1 then
+            local f = allFrames[arg1] or (arg1 == "pet" and allFrames["playerpet"])
+            if f and f:IsShown() then Refresh(f) end
+        end
         return
     end
 

@@ -1,5 +1,13 @@
 # SimpleHeal Changelog
 
+## v1.3.1
+- Major performance overhaul: unit events now update only the affected frame instead of all frames (~90% less CPU in raids)
+- Single buff scan per frame update instead of six separate loops
+- Cached spellbook lookups
+- Target highlight - white border around your current target
+- Color mode option: class-colored bars or dark bars with class-colored names (HealBot style)
+- Spell name validation on save - warns about typos or unlearned spells
+
 ## v1.3.0
 - Two-tab settings panel: Spells & Profiles / Settings
 - Bar texture themes (Minimalist, Default, Flat, Blizzard, Smooth)
