@@ -24,20 +24,43 @@ local DEFAULTS = {
     clickTarget = false,  -- target unit on click
 }
 
-local BINDINGS = {
-    { key = "LEFT_CLICK",        label = "Left Click" },
-    { key = "RIGHT_CLICK",       label = "Right Click" },
-    { key = "SHIFT_LEFT",        label = "Shift + Left" },
-    { key = "SHIFT_RIGHT",       label = "Shift + Right" },
-    { key = "CTRL_LEFT",         label = "Ctrl + Left" },
-    { key = "CTRL_RIGHT",        label = "Ctrl + Right" },
-    { key = "ALT_LEFT",          label = "Alt + Left" },
-    { key = "ALT_RIGHT",         label = "Alt + Right" },
+-- Scroll wheel bindings (fixed rows in the UI)
+local SCROLL_BINDINGS = {
     { key = "SCROLL_UP",         label = "Scroll Up" },
     { key = "SCROLL_DOWN",       label = "Scroll Down" },
     { key = "SHIFT_SCROLL_UP",   label = "Shift + Scroll Up" },
     { key = "SHIFT_SCROLL_DOWN", label = "Shift + Scroll Dn" },
 }
+
+-- Click bindings: free combination of modifier + mouse button (Cell/HealBot style)
+local MOD_OPTIONS = { "", "shift", "ctrl", "alt" }
+local MOD_LABELS  = { [""] = "None", shift = "Shift", ctrl = "Ctrl", alt = "Alt" }
+local BTN_LABELS  = { "Left", "Right", "Middle", "Btn 4", "Btn 5" }
+local MAX_CLICK_BINDINGS = 10
+
+-- Old fixed keys -> {modifier, button} (for presets, migration and legacy import)
+local LEGACY_KEY_MAP = {
+    { "LEFT_CLICK",  "",      1 },
+    { "RIGHT_CLICK", "",      2 },
+    { "SHIFT_LEFT",  "shift", 1 },
+    { "SHIFT_RIGHT", "shift", 2 },
+    { "CTRL_LEFT",   "ctrl",  1 },
+    { "CTRL_RIGHT",  "ctrl",  2 },
+    { "ALT_LEFT",    "alt",   1 },
+    { "ALT_RIGHT",   "alt",   2 },
+}
+
+-- Build a click-binding list from a table of legacy spell keys
+local function BindingsFromLegacySpells(spells)
+    local out = {}
+    for _, m in ipairs(LEGACY_KEY_MAP) do
+        local sp = spells and spells[m[1]]
+        if sp and sp ~= "" then
+            out[#out + 1] = { mod = m[2], btn = m[3], spell = sp }
+        end
+    end
+    return out
+end
 
 -- Buff indicator colors (one per slot)
 local BUFF_COLORS = {
@@ -164,6 +187,7 @@ local canCastBuff  = {}  -- [slot] = true/false, cached on login/spec change
 local buffParseCache = {}
 local knownSpellCache = {}  -- [name] = true/false, wiped on SPELLS_CHANGED
 local scratchBuffs = {}     -- reusable per-Refresh buff name set
+local rangeSpellName        -- spell used for range fading, set by ApplyBindings
 
 -- Map player class to a default preset
 local CLASS_PRESET = {
@@ -647,8 +671,7 @@ local function Refresh(f)
 
     -- Range check
     local baseAlpha = db.frameAlpha or 1
-    local rangeSpell = Spell("LEFT_CLICK")
-    if rangeSpell and IsSpellInRange(rangeSpell, unit) == 0 then
+    if rangeSpellName and IsSpellInRange(rangeSpellName, unit) == 0 then
         f:SetAlpha(OOR_ALPHA * baseAlpha)
     else
         f:SetAlpha(baseAlpha)
@@ -835,53 +858,55 @@ local function ApplyBindings()
         return
     end
 
+    -- Cache the spell used for range checks (unmodified left click, or first bound spell)
+    rangeSpellName = nil
+    for _, b in ipairs(db.bindings or {}) do
+        if b.spell and b.spell ~= "" and b.mod == "" and b.btn == 1 then
+            rangeSpellName = b.spell
+            break
+        end
+    end
+    if not rangeSpellName then
+        for _, b in ipairs(db.bindings or {}) do
+            if b.spell and b.spell ~= "" then rangeSpellName = b.spell break end
+        end
+    end
+
     for _, f in pairs(allFrames) do
         local u = f.unit
 
-        local function SetBinding(typeAttr, spellAttr, macroAttr, key)
-            local sp = Spell(key)
-            if sp then
-                if db.clickTarget then
-                    f:SetAttribute(typeAttr, "macro")
-                    f:SetAttribute(macroAttr, "/target " .. u .. "\n/cast [@" .. u .. "] " .. sp)
-                    f:SetAttribute(spellAttr, nil)
-                else
-                    f:SetAttribute(typeAttr, "spell")
-                    f:SetAttribute(spellAttr, sp)
-                    f:SetAttribute(macroAttr, nil)
-                end
-            else
-                if db.clickTarget and typeAttr == "type1" then
-                    f:SetAttribute(typeAttr, "target")
-                else
-                    f:SetAttribute(typeAttr, nil)
-                end
-                f:SetAttribute(spellAttr, nil)
-                f:SetAttribute(macroAttr, nil)
+        -- Clear all click attributes (every modifier x button combo)
+        for _, mod in ipairs(MOD_OPTIONS) do
+            local prefix = mod == "" and "" or (mod .. "-")
+            for btn = 1, 5 do
+                f:SetAttribute(prefix .. "type" .. btn, nil)
+                f:SetAttribute(prefix .. "spell" .. btn, nil)
+                f:SetAttribute(prefix .. "macrotext" .. btn, nil)
             end
         end
 
-        SetBinding("type1", "spell1", "macrotext1", "LEFT_CLICK")
-        if db.clickTarget then
-            local rc = Spell("RIGHT_CLICK")
-            if rc then
-                f:SetAttribute("type2", "macro")
-                f:SetAttribute("macrotext2", "/target " .. u .. "\n/cast [@" .. u .. "] " .. rc)
-                f:SetAttribute("spell2", nil)
-            else
-                f:SetAttribute("type2", "togglemenu")
-                f:SetAttribute("macrotext2", nil)
-                f:SetAttribute("spell2", nil)
+        -- Apply the configured click bindings
+        for _, b in ipairs(db.bindings or {}) do
+            if b.spell and b.spell ~= "" and b.btn then
+                local prefix = b.mod == "" and "" or (b.mod .. "-")
+                if db.clickTarget then
+                    f:SetAttribute(prefix .. "type" .. b.btn, "macro")
+                    f:SetAttribute(prefix .. "macrotext" .. b.btn,
+                        "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
+                else
+                    f:SetAttribute(prefix .. "type" .. b.btn, "spell")
+                    f:SetAttribute(prefix .. "spell" .. b.btn, b.spell)
+                end
             end
-        else
-            SetBinding("type2", "spell2", "macrotext2", "RIGHT_CLICK")
         end
-        SetBinding("shift-type1", "shift-spell1", "shift-macrotext1", "SHIFT_LEFT")
-        SetBinding("shift-type2", "shift-spell2", "shift-macrotext2", "SHIFT_RIGHT")
-        SetBinding("ctrl-type1", "ctrl-spell1", "ctrl-macrotext1", "CTRL_LEFT")
-        SetBinding("ctrl-type2", "ctrl-spell2", "ctrl-macrotext2", "CTRL_RIGHT")
-        SetBinding("alt-type1", "alt-spell1", "alt-macrotext1", "ALT_LEFT")
-        SetBinding("alt-type2", "alt-spell2", "alt-macrotext2", "ALT_RIGHT")
+
+        -- Defaults for unbound base clicks
+        if not f:GetAttribute("type2") then
+            f:SetAttribute("type2", "togglemenu")
+        end
+        if db.clickTarget and not f:GetAttribute("type1") then
+            f:SetAttribute("type1", "target")
+        end
 
         local function SetScrollBinding(btn, attr_type, attr_spell, key)
             local sp = Spell(key)
@@ -911,7 +936,7 @@ local function MakeFrame(unit, parent)
     f:SetSize(db.frameW, db.frameH)
     f.unit = unit
     f:SetAttribute("unit", unit)
-    f:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    f:RegisterForClicks("AnyUp")
 
     -- Background
     local bg = f:CreateTexture(nil, "BACKGROUND")
@@ -1406,7 +1431,8 @@ local function CreateConfigPanel()
 
     local function FillFromPreset(preset)
         p.takeSnapshot()
-        for _, binding in ipairs(BINDINGS) do
+        db.bindings = BindingsFromLegacySpells(preset.spells)
+        for _, binding in ipairs(SCROLL_BINDINGS) do
             local sp = preset.spells[binding.key] or ""
             p.editBoxes[binding.key]:SetText(sp)
             db.spells[binding.key] = sp
@@ -1417,6 +1443,7 @@ local function CreateConfigPanel()
             db.buffs[slot] = b
         end
         UIDropDownMenu_SetText(presetDrop, preset.name)
+        p.RefreshBindingRows()
         ApplyBindings()
         UpdateCanCastBuffs()
         print("|cff00ff00SimpleHeal:|r " .. preset.name .. " preset applied! (Undo button reverts)")
@@ -1457,10 +1484,19 @@ local function CreateConfigPanel()
         if prof then
             for k, v in pairs(prof.spells) do db.spells[k] = v end
             for i2 = 1, 4 do db.buffs[i2] = prof.buffs[i2] or "" end
+            if prof.bindings then
+                db.bindings = {}
+                for _, b in ipairs(prof.bindings) do
+                    db.bindings[#db.bindings + 1] = { mod = b.mod, btn = b.btn, spell = b.spell }
+                end
+            else
+                db.bindings = BindingsFromLegacySpells(prof.spells)
+            end
         end
         db.activeProfile = name
         UIDropDownMenu_SetText(profDrop, name)
-        for _, binding in ipairs(BINDINGS) do
+        p.RefreshBindingRows()
+        for _, binding in ipairs(SCROLL_BINDINGS) do
             p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
         end
         for s = 1, 4 do
@@ -1524,16 +1560,22 @@ local function CreateConfigPanel()
         local name = db.activeProfile or "Default"
         if name == "Default" then return end
         if not db.profiles then db.profiles = {} end
-        db.profiles[name] = { spells = {}, buffs = {} }
+        db.profiles[name] = { spells = {}, buffs = {}, bindings = {} }
         for k, v in pairs(db.spells) do db.profiles[name].spells[k] = v end
         for i2 = 1, 4 do db.profiles[name].buffs[i2] = db.buffs[i2] or "" end
+        for _, b in ipairs(db.bindings or {}) do
+            table.insert(db.profiles[name].bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
+        end
     end
 
     p.undoSnapshot = nil
     p.takeSnapshot = function()
-        p.undoSnapshot = { spells = {}, buffs = {} }
+        p.undoSnapshot = { spells = {}, buffs = {}, bindings = {} }
         for k, v in pairs(db.spells) do p.undoSnapshot.spells[k] = v end
         for i2 = 1, 4 do p.undoSnapshot.buffs[i2] = db.buffs[i2] or "" end
+        for _, b in ipairs(db.bindings or {}) do
+            table.insert(p.undoSnapshot.bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
+        end
     end
 
     profUndoBtn:SetScript("OnClick", function()
@@ -1543,7 +1585,12 @@ local function CreateConfigPanel()
         end
         for k, v in pairs(p.undoSnapshot.spells) do db.spells[k] = v end
         for i2 = 1, 4 do db.buffs[i2] = p.undoSnapshot.buffs[i2] or "" end
-        for _, binding in ipairs(BINDINGS) do
+        db.bindings = {}
+        for _, b in ipairs(p.undoSnapshot.bindings or {}) do
+            table.insert(db.bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
+        end
+        p.RefreshBindingRows()
+        for _, binding in ipairs(SCROLL_BINDINGS) do
             p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
         end
         for s = 1, 4 do
@@ -1606,18 +1653,145 @@ local function CreateConfigPanel()
         end)
     end
 
+    ------------------------------------------------
+    -- Click bindings: dynamic rows [modifier][button][spell][x]
+    ------------------------------------------------
+    local bindTop = 106
+    local bindRowH = 24
+    p.bindingRows = {}
+
+    local function ApplyRowToDB(i)
+        if InCombatLockdown() then
+            pendingApply = true
+        else
+            ApplyBindings()
+        end
+    end
+
+    for i = 1, MAX_CLICK_BINDINGS do
+        local rowY = -bindTop - (i - 1) * bindRowH
+        local row = CreateFrame("Frame", nil, t1)
+        row:SetSize(panelW - padX * 2, 22)
+        row:SetPoint("TOPLEFT", padX, rowY)
+
+        local modBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        modBtn:SetSize(48, 20)
+        modBtn:SetPoint("LEFT", 0, 0)
+        modBtn:SetScript("OnClick", function()
+            local b = db.bindings[i]
+            if not b then return end
+            local idx = 1
+            for j, m in ipairs(MOD_OPTIONS) do
+                if m == b.mod then idx = j break end
+            end
+            b.mod = MOD_OPTIONS[(idx % #MOD_OPTIONS) + 1]
+            modBtn:SetText(MOD_LABELS[b.mod])
+            ApplyRowToDB(i)
+        end)
+        AddTooltip(modBtn, "Modifier", "Click to cycle: None / Shift / Ctrl / Alt")
+
+        local btnBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        btnBtn:SetSize(56, 20)
+        btnBtn:SetPoint("LEFT", modBtn, "RIGHT", 2, 0)
+        btnBtn:SetScript("OnClick", function()
+            local b = db.bindings[i]
+            if not b then return end
+            b.btn = (b.btn % 5) + 1
+            btnBtn:SetText(BTN_LABELS[b.btn])
+            ApplyRowToDB(i)
+        end)
+        AddTooltip(btnBtn, "Mouse button", "Click to cycle: Left / Right / Middle / Button 4 / Button 5")
+
+        local eb = CreateFrame("EditBox", "SimpleHealBindEB" .. i, row, "InputBoxTemplate")
+        eb:SetSize(160, 20)
+        eb:SetPoint("LEFT", btnBtn, "RIGHT", 8, 0)
+        eb:SetAutoFocus(false)
+        eb:SetMaxLetters(40)
+        eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        eb:HookScript("OnEditFocusLost", function(self)
+            local b = db.bindings[i]
+            if b then
+                b.spell = self:GetText() or ""
+                ApplyRowToDB(i)
+            end
+        end)
+        AttachValidation(eb)
+        AttachAutocomplete(eb, false)
+
+        local delBtn = CreateFrame("Button", nil, row, "UIPanelCloseButton")
+        delBtn:SetSize(22, 22)
+        delBtn:SetPoint("LEFT", eb, "RIGHT", 0, 0)
+        delBtn:SetScript("OnClick", function()
+            table.remove(db.bindings, i)
+            p.RefreshBindingRows()
+            if not InCombatLockdown() then ApplyBindings() end
+        end)
+
+        row.modBtn, row.btnBtn, row.eb = modBtn, btnBtn, eb
+        row:Hide()
+        p.bindingRows[i] = row
+    end
+
+    local addBindBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
+    addBindBtn:SetSize(110, 20)
+    addBindBtn:SetText("+ Add binding")
+    addBindBtn:SetScript("OnClick", function()
+        if #db.bindings >= MAX_CLICK_BINDINGS then
+            print("|cff00ff00SimpleHeal:|r Max " .. MAX_CLICK_BINDINGS .. " bindings.")
+            return
+        end
+        db.bindings[#db.bindings + 1] = { mod = "", btn = 1, spell = "" }
+        p.RefreshBindingRows()
+    end)
+
+    p.RefreshBindingRows = function()
+        if not db.bindings then db.bindings = {} end
+        for i = 1, MAX_CLICK_BINDINGS do
+            local row = p.bindingRows[i]
+            local b = db.bindings[i]
+            if b then
+                row.modBtn:SetText(MOD_LABELS[b.mod] or "None")
+                row.btnBtn:SetText(BTN_LABELS[b.btn] or "Left")
+                row.eb:SetText(b.spell or "")
+                row:Show()
+            else
+                row:Hide()
+            end
+        end
+        addBindBtn:ClearAllPoints()
+        addBindBtn:SetPoint("TOPLEFT", padX, -bindTop - #db.bindings * bindRowH - 2)
+        if #db.bindings >= MAX_CLICK_BINDINGS then
+            addBindBtn:Disable()
+        else
+            addBindBtn:Enable()
+        end
+    end
+    p.RefreshBindingRows()
+
+    -- Scroll wheel bindings (fixed rows below the click bindings)
+    local scrollY = -bindTop - MAX_CLICK_BINDINGS * bindRowH - 28
+    local dividerLine = t1:CreateTexture(nil, "ARTWORK")
+    dividerLine:SetPoint("TOPLEFT", padX, scrollY + 8)
+    dividerLine:SetPoint("TOPRIGHT", -padX, scrollY + 8)
+    dividerLine:SetHeight(1)
+    dividerLine:SetColorTexture(0.4, 0.4, 0.4, 0.6)
+
+    local scrollHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    scrollHeader:SetPoint("TOPLEFT", padX, scrollY + 2)
+    scrollHeader:SetText("Scroll wheel")
+
     p.editBoxes = {}
-    local spellTop = 106
-    for i, binding in ipairs(BINDINGS) do
-        local extra = i > 8 and 24 or 0  -- gap before scroll-wheel group
-        local y = -spellTop - (i - 1) * rowH - extra
+    local scrollTop = -scrollY + 16
+    for i, binding in ipairs(SCROLL_BINDINGS) do
+        local y = -scrollTop - (i - 1) * bindRowH
         local label = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         label:SetPoint("TOPLEFT", padX, y)
         label:SetWidth(120)
         label:SetJustifyH("RIGHT")
         label:SetText(binding.label)
         local eb = CreateFrame("EditBox", "SimpleHealEB" .. i, t1, "InputBoxTemplate")
-        eb:SetSize(170, 20)
+        eb:SetSize(160, 20)
         eb:SetPoint("TOPLEFT", padX + 128, y + 2)
         eb:SetAutoFocus(false)
         eb:SetMaxLetters(40)
@@ -1628,20 +1802,8 @@ local function CreateConfigPanel()
         p.editBoxes[binding.key] = eb
     end
 
-    -- Divider between click and scroll bindings
-    local scrollY = -spellTop - 8 * rowH
-    local dividerLine = t1:CreateTexture(nil, "ARTWORK")
-    dividerLine:SetPoint("TOPLEFT", padX, scrollY - 2)
-    dividerLine:SetPoint("TOPRIGHT", -padX, scrollY - 2)
-    dividerLine:SetHeight(1)
-    dividerLine:SetColorTexture(0.4, 0.4, 0.4, 0.6)
-
-    local scrollHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    scrollHeader:SetPoint("TOPLEFT", padX, scrollY - 8)
-    scrollHeader:SetText("Scroll wheel")
-
     -- Buff tracking
-    local buffTop = spellTop + #BINDINGS * rowH + 24 + 10
+    local buffTop = scrollTop + #SCROLL_BINDINGS * bindRowH + 24
     local buffHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     buffHeader:SetPoint("TOPLEFT", padX, -buffTop + 14)
     buffHeader:SetText("Missing Buff Alerts")
@@ -2024,15 +2186,17 @@ local function CreateConfigPanel()
     exportBtn:SetPoint("LEFT", ieBox, "RIGHT", 4, 0)
     exportBtn:SetText("Export")
     exportBtn:SetScript("OnClick", function()
-        local str = ""
-        for _, binding in ipairs(BINDINGS) do
-            str = str .. (db.spells[binding.key] or "") .. "|"
+        local parts = { "SH2" }
+        for _, b in ipairs(db.bindings or {}) do
+            parts[#parts + 1] = "b:" .. b.mod .. ":" .. b.btn .. ":" .. (b.spell or "")
+        end
+        for _, binding in ipairs(SCROLL_BINDINGS) do
+            parts[#parts + 1] = "s:" .. binding.key .. ":" .. (db.spells[binding.key] or "")
         end
         for i = 1, 4 do
-            str = str .. (db.buffs[i] or "")
-            if i < 4 then str = str .. "|" end
+            parts[#parts + 1] = "a:" .. i .. ":" .. (db.buffs[i] or "")
         end
-        ieBox:SetText(str)
+        ieBox:SetText(table.concat(parts, ";"))
         ieBox:HighlightText()
         ieBox:SetFocus()
     end)
@@ -2044,38 +2208,68 @@ local function CreateConfigPanel()
     importBtn:SetScript("OnClick", function()
         local str = ieBox:GetText()
         if not str or str == "" then return end
-        local parts = {}
-        for part in (str .. "|"):gmatch("([^|]*)|") do
-            parts[#parts + 1] = part
-        end
-        local spellsByKey = {}
-        local numSpells
-        if #parts >= #BINDINGS + 4 then
-            -- current format: follows BINDINGS order
-            numSpells = #BINDINGS
-            for i, binding in ipairs(BINDINGS) do
-                spellsByKey[binding.key] = parts[i] or ""
+
+        if str:sub(1, 4) == "SH2;" or str == "SH2" then
+            -- New format: SH2;b:mod:btn:spell;s:KEY:spell;a:slot:buffs
+            local newBindings = {}
+            for seg in str:gmatch("[^;]+") do
+                local kind, rest = seg:match("^(%a):(.*)$")
+                if kind == "b" then
+                    local mod, btn, spell = rest:match("^([a-z]*):(%d+):(.*)$")
+                    if btn then
+                        newBindings[#newBindings + 1] =
+                            { mod = mod or "", btn = tonumber(btn), spell = spell or "" }
+                    end
+                elseif kind == "s" then
+                    local key, spell = rest:match("^([%u_]+):(.*)$")
+                    if key then db.spells[key] = spell or "" end
+                elseif kind == "a" then
+                    local slot, buffs = rest:match("^(%d):(.*)$")
+                    if slot then db.buffs[tonumber(slot)] = buffs or "" end
+                end
             end
-        elseif #parts >= 12 then
-            -- old format (pre ctrl/alt): 8 spells in old order + 4 buffs
-            numSpells = 8
-            local OLD_ORDER = { "LEFT_CLICK", "RIGHT_CLICK", "SHIFT_LEFT", "SHIFT_RIGHT",
-                "SCROLL_UP", "SCROLL_DOWN", "SHIFT_SCROLL_UP", "SHIFT_SCROLL_DOWN" }
-            for i, key in ipairs(OLD_ORDER) do
-                spellsByKey[key] = parts[i] or ""
-            end
+            db.bindings = newBindings
         else
-            print("|cff00ff00SimpleHeal:|r Invalid import string.")
-            return
+            -- Legacy pipe format
+            local parts = {}
+            for part in (str .. "|"):gmatch("([^|]*)|") do
+                parts[#parts + 1] = part
+            end
+            if #parts < 12 then
+                print("|cff00ff00SimpleHeal:|r Invalid import string.")
+                return
+            end
+            local OLD_ORDER
+            local numSpells
+            if #parts >= 16 then
+                numSpells = 12
+                OLD_ORDER = { "LEFT_CLICK", "RIGHT_CLICK", "SHIFT_LEFT", "SHIFT_RIGHT",
+                    "CTRL_LEFT", "CTRL_RIGHT", "ALT_LEFT", "ALT_RIGHT",
+                    "SCROLL_UP", "SCROLL_DOWN", "SHIFT_SCROLL_UP", "SHIFT_SCROLL_DOWN" }
+            else
+                numSpells = 8
+                OLD_ORDER = { "LEFT_CLICK", "RIGHT_CLICK", "SHIFT_LEFT", "SHIFT_RIGHT",
+                    "SCROLL_UP", "SCROLL_DOWN", "SHIFT_SCROLL_UP", "SHIFT_SCROLL_DOWN" }
+            end
+            local legacySpells = {}
+            for i, key in ipairs(OLD_ORDER) do
+                legacySpells[key] = parts[i] or ""
+            end
+            db.bindings = BindingsFromLegacySpells(legacySpells)
+            for _, binding in ipairs(SCROLL_BINDINGS) do
+                db.spells[binding.key] = legacySpells[binding.key] or ""
+            end
+            for s = 1, 4 do
+                db.buffs[s] = parts[numSpells + s] or ""
+            end
         end
-        for _, binding in ipairs(BINDINGS) do
-            local v = spellsByKey[binding.key] or ""
-            db.spells[binding.key] = v
-            p.editBoxes[binding.key]:SetText(v)
+
+        p.RefreshBindingRows()
+        for _, binding in ipairs(SCROLL_BINDINGS) do
+            p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
         end
         for s = 1, 4 do
-            db.buffs[s] = parts[numSpells + s] or ""
-            p.buffBoxes[s]:SetText(parts[numSpells + s] or "")
+            p.buffBoxes[s]:SetText(db.buffs[s] or "")
         end
         ApplyBindings()
         UpdateCanCastBuffs()
@@ -2093,7 +2287,14 @@ local function CreateConfigPanel()
     saveBtn:SetText("Save")
     saveBtn:SetScript("OnClick", function()
         p.takeSnapshot()
-        for _, binding in ipairs(BINDINGS) do
+        -- Commit any binding spell fields that still have focus
+        for i, row in ipairs(p.bindingRows) do
+            local b = db.bindings[i]
+            if b and row:IsShown() then
+                b.spell = row.eb:GetText() or ""
+            end
+        end
+        for _, binding in ipairs(SCROLL_BINDINGS) do
             local text = p.editBoxes[binding.key]:GetText()
             db.spells[binding.key] = (text and text ~= "") and text or ""
         end
@@ -2128,8 +2329,7 @@ local function CreateConfigPanel()
 
         -- Warn about spell names not found in the spellbook
         local unknown = {}
-        for _, binding in ipairs(BINDINGS) do
-            local sp = db.spells[binding.key]
+        local function CheckSpell(sp)
             if sp and sp ~= "" then
                 local base = sp:match("^(.-)%s*%(") or sp  -- strip "(Rank X)"
                 if not GetSpellInfo(base) then
@@ -2137,6 +2337,8 @@ local function CreateConfigPanel()
                 end
             end
         end
+        for _, b in ipairs(db.bindings or {}) do CheckSpell(b.spell) end
+        for _, binding in ipairs(SCROLL_BINDINGS) do CheckSpell(db.spells[binding.key]) end
         if #unknown > 0 then
             print("|cff00ff00SimpleHeal:|r |cffff5555Warning:|r these spells are not in your spellbook (typo or not learned yet): " .. table.concat(unknown, ", "))
         end
@@ -2155,7 +2357,9 @@ local function CreateConfigPanel()
     resetBtn:SetPoint("BOTTOMRIGHT", -padX - 20, 14)
     resetBtn:SetText("Reset")
     resetBtn:SetScript("OnClick", function()
-        for _, binding in ipairs(BINDINGS) do
+        db.bindings = BindingsFromLegacySpells(DEFAULTS.spells)
+        p.RefreshBindingRows()
+        for _, binding in ipairs(SCROLL_BINDINGS) do
             p.editBoxes[binding.key]:SetText(DEFAULTS.spells[binding.key] or "")
         end
         for slot = 1, 4 do
@@ -2171,7 +2375,8 @@ end
 
 local function ShowConfig()
     if not configPanel then CreateConfigPanel() end
-    for _, binding in ipairs(BINDINGS) do
+    configPanel.RefreshBindingRows()
+    for _, binding in ipairs(SCROLL_BINDINGS) do
         configPanel.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
     end
     for slot = 1, 4 do
@@ -2820,6 +3025,14 @@ local function Init()
         print("  |cffffd100/sh|r - settings (spells, layout, size)")
         print("  |cffffd100/sh test|r - preview with 15 fake players")
         print("  Drag the handle above the frames to move them")
+    end
+
+    -- Migrate old fixed click keys to the flexible binding list
+    if not db.bindings then
+        db.bindings = BindingsFromLegacySpells(db.spells)
+        if #db.bindings == 0 then
+            db.bindings = { { mod = "", btn = 1, spell = "" } }
+        end
     end
 
     local _, playerClass = UnitClass("player")

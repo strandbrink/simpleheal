@@ -1,5 +1,12 @@
 # SimpleHeal Changelog
 
+## v1.5.0
+- Fully flexible click bindings (Cell/HealBot style): bind any spell to any mouse button (Left, Right, Middle, Button 4, Button 5) with any modifier (None, Shift, Ctrl, Alt)
+- Add up to 10 click bindings with the "+ Add binding" button, remove with X
+- Bindings apply instantly when edited (out of combat)
+- Existing bindings migrate automatically to the new system
+- New import/export format (old strings still import fine)
+
 ## v1.4.0
 - Updated for patch 2.5.6 (Interface 20506)
 - Settings are now saved per character (existing settings migrate to the first character you log in with)
