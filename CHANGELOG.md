@@ -1,5 +1,12 @@
 # SimpleHeal Changelog
 
+## v1.5.1
+- Safer settings migration: when upgrading from pre-1.4, ALL characters now inherit your previous setup (previously only the first character to log in got it)
+- New command /sh copy <name> - copy all settings from another character (use this if a character lost its setup after the 1.4 per-character change)
+- Duplicate binding warning: red text in the settings panel and a chat warning when two bindings use the same modifier+button (all conflicts listed)
+- On duplicate bindings the first one always wins - a new row can never overwrite an existing spell
+- New command /sh bind - prints active bindings and frame attributes for troubleshooting
+
 ## v1.5.0
 - Fully flexible click bindings (Cell/HealBot style): bind any spell to any mouse button (Left, Right, Middle, Button 4, Button 5) with any modifier (None, Shift, Ctrl, Alt)
 - Add up to 10 click bindings with the "+ Add binding" button, remove with X

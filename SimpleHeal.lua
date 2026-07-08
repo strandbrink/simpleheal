@@ -50,6 +50,25 @@ local LEGACY_KEY_MAP = {
     { "ALT_RIGHT",   "alt",   2 },
 }
 
+-- Returns "Shift + Left, Ctrl + Right" listing every modifier+button combo used twice, or nil
+local function FindDuplicateBinding(bindings)
+    local seen, dups, added = {}, {}, {}
+    for _, b in ipairs(bindings or {}) do
+        if b.spell and b.spell ~= "" then
+            local key = (b.mod or "") .. ":" .. (b.btn or 0)
+            if seen[key] and not added[key] then
+                added[key] = true
+                dups[#dups + 1] = (MOD_LABELS[b.mod] or "?") .. " + " .. (BTN_LABELS[b.btn] or "?")
+            end
+            seen[key] = true
+        end
+    end
+    if #dups > 0 then
+        return table.concat(dups, ", ")
+    end
+    return nil
+end
+
 -- Build a click-binding list from a table of legacy spell keys
 local function BindingsFromLegacySpells(spells)
     local out = {}
@@ -858,6 +877,12 @@ local function ApplyBindings()
         return
     end
 
+    -- Warn if two bindings use the same modifier+button (only the first one wins)
+    local dup = FindDuplicateBinding(db.bindings)
+    if dup then
+        print("|cff00ff00SimpleHeal:|r |cffff5555Warning:|r two bindings use " .. dup .. " - only the first one will cast!")
+    end
+
     -- Cache the spell used for range checks (unmodified left click, or first bound spell)
     rangeSpellName = nil
     for _, b in ipairs(db.bindings or {}) do
@@ -885,17 +910,20 @@ local function ApplyBindings()
             end
         end
 
-        -- Apply the configured click bindings
+        -- Apply the configured click bindings.
+        -- On duplicates the FIRST binding wins - later rows never overwrite an earlier spell.
         for _, b in ipairs(db.bindings or {}) do
             if b.spell and b.spell ~= "" and b.btn then
                 local prefix = b.mod == "" and "" or (b.mod .. "-")
-                if db.clickTarget then
-                    f:SetAttribute(prefix .. "type" .. b.btn, "macro")
-                    f:SetAttribute(prefix .. "macrotext" .. b.btn,
-                        "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
-                else
-                    f:SetAttribute(prefix .. "type" .. b.btn, "spell")
-                    f:SetAttribute(prefix .. "spell" .. b.btn, b.spell)
+                if not f:GetAttribute(prefix .. "type" .. b.btn) then
+                    if db.clickTarget then
+                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
+                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
+                            "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
+                    else
+                        f:SetAttribute(prefix .. "type" .. b.btn, "spell")
+                        f:SetAttribute(prefix .. "spell" .. b.btn, b.spell)
+                    end
                 end
             end
         end
@@ -1661,6 +1689,7 @@ local function CreateConfigPanel()
     p.bindingRows = {}
 
     local function ApplyRowToDB(i)
+        if p.UpdateDupWarning then p.UpdateDupWarning() end
         if InCombatLockdown() then
             pendingApply = true
         else
@@ -1745,6 +1774,23 @@ local function CreateConfigPanel()
         p.RefreshBindingRows()
     end)
 
+    local dupWarning = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    dupWarning:SetPoint("LEFT", addBindBtn, "RIGHT", 8, 0)
+    dupWarning:SetPoint("RIGHT", t1, "RIGHT", -padX, 0)
+    dupWarning:SetJustifyH("LEFT")
+    dupWarning:SetTextColor(1, 0.35, 0.35)
+    dupWarning:Hide()
+
+    p.UpdateDupWarning = function()
+        local dup = FindDuplicateBinding(db.bindings)
+        if dup then
+            dupWarning:SetText("Duplicate: " .. dup .. "!")
+            dupWarning:Show()
+        else
+            dupWarning:Hide()
+        end
+    end
+
     p.RefreshBindingRows = function()
         if not db.bindings then db.bindings = {} end
         for i = 1, MAX_CLICK_BINDINGS do
@@ -1766,6 +1812,7 @@ local function CreateConfigPanel()
         else
             addBindBtn:Enable()
         end
+        p.UpdateDupWarning()
     end
     p.RefreshBindingRows()
 
@@ -2945,28 +2992,49 @@ end
 ----------------------------------------------
 -- Initialization
 ----------------------------------------------
+-- Deep copy for settings tables
+local function CopyDeep(src)
+    local dst = {}
+    for k, v in pairs(src) do
+        if type(v) == "table" then
+            dst[k] = CopyDeep(v)
+        else
+            dst[k] = v
+        end
+    end
+    return dst
+end
+
 local function Init()
     if not SimpleHealDB then SimpleHealDB = {} end
     if not SimpleHealDB.chars then SimpleHealDB.chars = {} end
+
+    -- Stash old account-wide settings in _legacy so EVERY character can inherit
+    -- them (not just the first one to log in)
+    if SimpleHealDB.spells then
+        SimpleHealDB._legacy = SimpleHealDB._legacy or {}
+        local keys = {}
+        for k in pairs(SimpleHealDB) do
+            if k ~= "chars" and k ~= "_legacy" then keys[#keys + 1] = k end
+        end
+        for _, k in ipairs(keys) do
+            SimpleHealDB._legacy[k] = SimpleHealDB[k]
+            SimpleHealDB[k] = nil
+        end
+    end
 
     -- Per-character settings
     local charKey = UnitName("player") .. "-" .. (GetRealmName() or "Realm")
     local cdb = SimpleHealDB.chars[charKey]
     if not cdb then
-        cdb = {}
-        SimpleHealDB.chars[charKey] = cdb
-        -- One-time migration: move old account-wide settings to this character
-        if SimpleHealDB.spells then
-            local keys = {}
-            for k in pairs(SimpleHealDB) do
-                if k ~= "chars" then keys[#keys + 1] = k end
-            end
-            for _, k in ipairs(keys) do
-                cdb[k] = SimpleHealDB[k]
-                SimpleHealDB[k] = nil
-            end
-            print("|cff00ff00SimpleHeal:|r Settings are now saved per character.")
+        if SimpleHealDB._legacy then
+            -- New character on this account: inherit the pre-1.4 shared settings
+            cdb = CopyDeep(SimpleHealDB._legacy)
+            print("|cff00ff00SimpleHeal:|r Settings are now saved per character - your previous setup was inherited.")
+        else
+            cdb = {}
         end
+        SimpleHealDB.chars[charKey] = cdb
     end
 
     if not cdb.spells then cdb.spells = {} end
@@ -3241,6 +3309,54 @@ SlashCmdList["SIMPLEHEAL"] = function(msg)
         ApplyBindings()
     elseif msg == "test" then
         ToggleTestMode()
+    elseif msg:match("^copy%s+%S") then
+        local target = msg:match("^copy%s+(%S+)")
+        local found
+        for key in pairs(SimpleHealDB.chars or {}) do
+            local nm = key:match("^(.-)%-")
+            if nm and nm:lower() == target:lower() then found = key break end
+        end
+        if not found then
+            print("|cff00ff00SimpleHeal:|r No saved settings found for '" .. target .. "'. Characters with settings:")
+            for key in pairs(SimpleHealDB.chars or {}) do print("  " .. key) end
+            return
+        end
+        local src = SimpleHealDB.chars[found]
+        for k in pairs(db) do db[k] = nil end
+        for k, v in pairs(src) do
+            if type(v) == "table" then
+                local copy = {}
+                local function deep(s, d)
+                    for k2, v2 in pairs(s) do
+                        if type(v2) == "table" then d[k2] = {}; deep(v2, d[k2]) else d[k2] = v2 end
+                    end
+                end
+                deep(v, copy)
+                db[k] = copy
+            else
+                db[k] = v
+            end
+        end
+        print("|cff00ff00SimpleHeal:|r Copied settings from " .. found .. ". Type /reload to apply.")
+    elseif msg == "bind" then
+        print("|cff00ff00SimpleHeal:|r Active bindings:")
+        for i, b in ipairs(db.bindings or {}) do
+            print(("  %d: [%s + %s] = '%s'"):format(i, MOD_LABELS[b.mod] or "?", BTN_LABELS[b.btn] or "?", b.spell or ""))
+        end
+        local f = allFrames["player"]
+        if f then
+            print("|cff00ff00SimpleHeal:|r Player frame attributes:")
+            for _, mod in ipairs(MOD_OPTIONS) do
+                local prefix = mod == "" and "" or (mod .. "-")
+                for btn = 1, 5 do
+                    local t = f:GetAttribute(prefix .. "type" .. btn)
+                    if t then
+                        local sp = f:GetAttribute(prefix .. "spell" .. btn) or f:GetAttribute(prefix .. "macrotext" .. btn) or ""
+                        print(("  %stype%d = %s (%s)"):format(prefix, btn, t, tostring(sp):gsub("\n", " / ")))
+                    end
+                end
+            end
+        end
     elseif msg == "config" or msg == "settings" or msg == "" then
         ShowConfig()
     else
@@ -3249,6 +3365,7 @@ SlashCmdList["SIMPLEHEAL"] = function(msg)
         print("  /sh target - toggle click-to-target")
         print("  /sh blizz - toggle Blizzard raid frames")
         print("  /sh test - toggle test frames (layout preview)")
+        print("  /sh copy <name> - copy settings from another character")
         print("  /sh reset - reset position")
     end
 end
