@@ -1,5 +1,21 @@
 # SimpleHeal Changelog
 
+## v1.4.0
+- Updated for patch 2.5.6 (Interface 20506)
+- Settings are now saved per character (existing settings migrate to the first character you log in with)
+- Role icons - tank/healer icon next to the name (toggleable)
+- Blizzard-style tabs on the settings panel
+- Live spell validation - names turn green (known) or red (unknown) as you type
+- Spell name autocomplete from your spellbook in all spell and buff fields
+- Unified dropdown style for preset, profile and spec selectors
+- Spell icon preview next to buff tracking fields
+- Divider between click and scroll wheel bindings
+- Smooth animated health bars
+- Health as percent option
+- Skull icon on dead players
+- Icon size slider for HoT icons and buff indicators
+- Toggle for the SimpleHeal title on the drag handle
+
 ## v1.3.1
 - Major performance overhaul: unit events now update only the affected frame instead of all frames (~90% less CPU in raids)
 - Single buff scan per frame update instead of six separate loops

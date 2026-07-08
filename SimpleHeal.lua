@@ -229,6 +229,35 @@ local function ApplyFontSize()
     end
 end
 
+-- Resize HoT icons and buff indicators on all frames
+local function ApplyIconSize()
+    local hotSize = db and db.iconSize or 10
+    local buffSize = math.max(5, math.floor(hotSize * 0.7))
+    local timerSize = math.max(6, math.floor(hotSize * 0.7))
+    local stackSize = math.max(6, math.floor(hotSize * 0.8))
+    for _, f in pairs(allFrames) do
+        if f.buffInd then
+            for slot = 1, 4 do
+                local ind = f.buffInd[slot]
+                ind:SetSize(buffSize, buffSize)
+                ind:ClearAllPoints()
+                ind:SetPoint("TOPRIGHT", f, "TOPRIGHT",
+                    -(BUFF_GAP + (4 - slot) * (buffSize + BUFF_GAP)),
+                    -BUFF_GAP)
+            end
+        end
+        if f.hots then
+            for h, hot in ipairs(f.hots) do
+                hot:SetSize(hotSize, hotSize)
+                hot:ClearAllPoints()
+                hot:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", (h - 1) * (hotSize + 1) + 1, 1)
+                hot.timer:SetFont(FONT_PATH, timerSize, "OUTLINE")
+                hot.stacks:SetFont(FONT_PATH, stackSize, "OUTLINE")
+            end
+        end
+    end
+end
+
 local function ApplyBarTexture()
     local tex = GetBarTexture()
     for _, f in pairs(allFrames) do
@@ -261,6 +290,29 @@ local function KnownSpell(name)
         knownSpellCache[name] = v
     end
     return v
+end
+
+-- List of spell names in the player's spellbook (for autocomplete)
+local spellbookNames = {}
+local function RebuildSpellbookNames()
+    wipe(spellbookNames)
+    local seen = {}
+    for tab = 1, GetNumSpellTabs() do
+        local _, _, offset, num = GetSpellTabInfo(tab)
+        for i = offset + 1, offset + num do
+            local name
+            if GetSpellBookItemName then
+                name = GetSpellBookItemName(i, "spell")
+            elseif GetSpellName then
+                name = GetSpellName(i, "spell")
+            end
+            if name and not seen[name] then
+                seen[name] = true
+                spellbookNames[#spellbookNames + 1] = name
+            end
+        end
+    end
+    table.sort(spellbookNames)
 end
 
 -- Check if the player knows any of the comma-separated spell names
@@ -422,6 +474,40 @@ local function HasBuff(unit, buffStr)
     return false
 end
 
+-- Smooth health bar animation
+local animFrames = {}
+local animator = CreateFrame("Frame")
+animator:Hide()
+animator:SetScript("OnUpdate", function(_, dt)
+    local k = math.min(1, dt * 12)
+    for f in pairs(animFrames) do
+        local cur = f.hp:GetValue()
+        local target = f.hpTarget or cur
+        local diff = target - cur
+        local _, maxV = f.hp:GetMinMaxValues()
+        if math.abs(diff) <= (maxV * 0.005 + 1) then
+            f.hp:SetValue(target)
+            animFrames[f] = nil
+        else
+            f.hp:SetValue(cur + diff * k)
+        end
+    end
+    if not next(animFrames) then animator:Hide() end
+end)
+
+local function SetHealthSmooth(f, value)
+    f.hpTarget = value
+    local cur = f.hp:GetValue()
+    local _, maxV = f.hp:GetMinMaxValues()
+    if math.abs(value - cur) <= (maxV * 0.005 + 1) then
+        f.hp:SetValue(value)
+        animFrames[f] = nil
+    else
+        animFrames[f] = true
+        animator:Show()
+    end
+end
+
 local function Refresh(f)
     local unit = f.unit
     local locked = InCombatLockdown()
@@ -435,12 +521,33 @@ local function Refresh(f)
     local hpMax = UnitHealthMax(unit)
 
     f.hp:SetMinMaxValues(0, hpMax)
-    f.hp:SetValue(hp)
+    SetHealthSmooth(f, hp)
 
     local name = UnitName(unit) or ""
     local maxLen = math.floor((db.frameW or 90) / 7)
     if #name > maxLen then name = name:sub(1, maxLen) .. ".." end
     f.name:SetText(name)
+
+    -- Role icon (only re-anchor when the role actually changes)
+    local role = (db.roleIcons ~= false) and GetUnitRole(unit) or "NONE"
+    if role ~= f.shownRole then
+        f.shownRole = role
+        if role == "TANK" then
+            f.roleIcon:SetTexCoord(0, 19/64, 22/64, 41/64)
+            f.roleIcon:Show()
+            f.name:ClearAllPoints()
+            f.name:SetPoint("LEFT", 15, 0)
+        elseif role == "HEALER" then
+            f.roleIcon:SetTexCoord(20/64, 39/64, 1/64, 20/64)
+            f.roleIcon:Show()
+            f.name:ClearAllPoints()
+            f.name:SetPoint("LEFT", 15, 0)
+        else
+            f.roleIcon:Hide()
+            f.name:ClearAllPoints()
+            f.name:SetPoint("LEFT", 4, 0)
+        end
+    end
 
     local isDead    = UnitIsDeadOrGhost(unit)
     local isOffline = not UnitIsConnected(unit)
@@ -477,22 +584,29 @@ local function Refresh(f)
     if isDead then
         f.hp:SetStatusBarColor(0.3, 0.3, 0.3)
         f.hp:SetValue(0)
+        f.hpTarget = 0
+        animFrames[f] = nil
         if hasRez then
             f.deficit:SetText("")
             f.statusText:SetText("REZ")
             f.statusText:SetTextColor(0.2, 1.0, 0.2)
             f.statusText:Show()
+            f.deadIcon:Hide()
         else
             f.deficit:SetText("DEAD")
             f.deficit:SetTextColor(1, 0.2, 0.2)
             f.statusText:Hide()
+            f.deadIcon:Show()
         end
     elseif isOffline then
         f.hp:SetStatusBarColor(0.2, 0.2, 0.2)
         f.hp:SetValue(0)
+        f.hpTarget = 0
+        animFrames[f] = nil
         f.deficit:SetText("OFFLINE")
         f.deficit:SetTextColor(0.5, 0.5, 0.5)
         f.statusText:Hide()
+        f.deadIcon:Hide()
     elseif isAFK then
         if darkMode then
             f.hp:SetStatusBarColor(0.15, 0.15, 0.15)
@@ -503,20 +617,32 @@ local function Refresh(f)
         f.statusText:SetText("AFK")
         f.statusText:SetTextColor(0.8, 0.8, 0.0)
         f.statusText:Show()
+        f.deadIcon:Hide()
     else
         if darkMode then
             f.hp:SetStatusBarColor(0.25, 0.25, 0.25)
         else
             f.hp:SetStatusBarColor(cr, cg, cb)
         end
-        local diff = hp - hpMax
-        if diff < 0 then
-            f.deficit:SetText(diff)
-            f.deficit:SetTextColor(1, 1, 1)
+        if db.hpPercent then
+            local pct = hpMax > 0 and math.floor(hp / hpMax * 100 + 0.5) or 0
+            if pct < 100 then
+                f.deficit:SetText(pct .. "%")
+                f.deficit:SetTextColor(1, 1, 1)
+            else
+                f.deficit:SetText("")
+            end
         else
-            f.deficit:SetText("")
+            local diff = hp - hpMax
+            if diff < 0 then
+                f.deficit:SetText(diff)
+                f.deficit:SetTextColor(1, 1, 1)
+            else
+                f.deficit:SetText("")
+            end
         end
         f.statusText:Hide()
+        f.deadIcon:Hide()
     end
 
     -- Range check
@@ -931,6 +1057,14 @@ local function MakeFrame(unit, parent)
     readyIcon:Hide()
     f.readyIcon = readyIcon
 
+    -- Role icon (tank/healer, left of name)
+    local roleIcon = hp:CreateTexture(nil, "OVERLAY")
+    roleIcon:SetSize(10, 10)
+    roleIcon:SetPoint("LEFT", 3, 0)
+    roleIcon:SetTexture("Interface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES")
+    roleIcon:Hide()
+    f.roleIcon = roleIcon
+
     -- Name
     local nameFs = hp:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     nameFs:SetPoint("LEFT", 4, 0)
@@ -958,6 +1092,14 @@ local function MakeFrame(unit, parent)
     rezIcon:SetTexture("Interface\\RaidFrame\\Raid-Icon-Rez")
     rezIcon:Hide()
     f.rezIcon = rezIcon
+
+    -- Dead skull icon (next to DEAD text)
+    local deadIcon = f:CreateTexture(nil, "OVERLAY")
+    deadIcon:SetSize(12, 12)
+    deadIcon:SetPoint("RIGHT", defFs, "LEFT", -2, 0)
+    deadIcon:SetTexture("Interface\\TargetingFrame\\UI-TargetingFrame-Skull")
+    deadIcon:Hide()
+    f.deadIcon = deadIcon
 
     -- Buff indicators (top-right corner, grayed-out clock icon)
     f.buffInd = {}
@@ -1095,7 +1237,7 @@ StaticPopupDialogs["SIMPLEHEAL_SAVE_PROFILE"] = {
         for k, v in pairs(db.spells) do db.profiles[name].spells[k] = v end
         for i = 1, 4 do db.profiles[name].buffs[i] = db.buffs[i] or "" end
         db.activeProfile = name
-        if configPanel then configPanel.profBtnText:SetText(name) end
+        if configPanel then UIDropDownMenu_SetText(configPanel.profDrop, name) end
         print("|cff00ff00SimpleHeal:|r Saved profile: " .. name)
     end,
     OnShow = function(self)
@@ -1118,7 +1260,7 @@ local function CreateConfigPanel()
     local panelW  = 340
     local rowH    = 28
     local padX    = 12
-    local panelH  = 660
+    local panelH  = 700
 
     local p = CreateFrame("Frame", "SimpleHealConfig", UIParent, "BackdropTemplate")
     p:SetSize(panelW, panelH)
@@ -1163,9 +1305,9 @@ local function CreateConfigPanel()
     tinsert(UISpecialFrames, "SimpleHealConfig")
 
     ------------------------------------------------
-    -- Tab system
+    -- Tab system (Blizzard-style tabs along the bottom edge)
     ------------------------------------------------
-    local tabContentTop = -56
+    local tabContentTop = -32
     local tab1Frame = CreateFrame("Frame", nil, p)
     tab1Frame:SetPoint("TOPLEFT", 0, tabContentTop)
     tab1Frame:SetPoint("BOTTOMRIGHT", 0, 42)
@@ -1174,36 +1316,61 @@ local function CreateConfigPanel()
     tab2Frame:SetPoint("BOTTOMRIGHT", 0, 42)
     tab2Frame:Hide()
 
-    local function MakeTab(text, x)
-        local btn = CreateFrame("Button", nil, p)
-        btn:SetSize(panelW / 2 - 8, 22)
-        btn:SetPoint("TOPLEFT", x, -28)
-        local btnBg = btn:CreateTexture(nil, "BACKGROUND")
-        btnBg:SetAllPoints()
-        btn.bg = btnBg
-        local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        btnText:SetPoint("CENTER")
-        btnText:SetText(text)
-        btn.label = btnText
-        return btn
-    end
+    local tabBtn1, tabBtn2
+    local usingBlizzTabs = pcall(function()
+        tabBtn1 = CreateFrame("Button", "SimpleHealConfigTab1", p, "CharacterFrameTabButtonTemplate")
+        tabBtn2 = CreateFrame("Button", "SimpleHealConfigTab2", p, "CharacterFrameTabButtonTemplate")
+    end)
 
-    local tabBtn1 = MakeTab("Spells & Profiles", padX)
-    local tabBtn2 = MakeTab("Settings", panelW / 2 + 2)
+    local SetActiveTab
+    if usingBlizzTabs then
+        tabBtn1:SetID(1)
+        tabBtn1:SetText("Spells & Profiles")
+        tabBtn1:SetPoint("TOPLEFT", p, "BOTTOMLEFT", 12, 4)
+        tabBtn2:SetID(2)
+        tabBtn2:SetText("Settings")
+        tabBtn2:SetPoint("LEFT", tabBtn1, "RIGHT", -14, 0)
+        PanelTemplates_SetNumTabs(p, 2)
 
-    local function SetActiveTab(n)
-        if n == 1 then
-            tab1Frame:Show(); tab2Frame:Hide()
-            tabBtn1.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
-            tabBtn2.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-            tabBtn1.label:SetTextColor(1, 1, 1)
-            tabBtn2.label:SetTextColor(0.6, 0.6, 0.6)
-        else
-            tab1Frame:Hide(); tab2Frame:Show()
-            tabBtn1.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-            tabBtn2.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
-            tabBtn1.label:SetTextColor(0.6, 0.6, 0.6)
-            tabBtn2.label:SetTextColor(1, 1, 1)
+        SetActiveTab = function(n)
+            PanelTemplates_SetTab(p, n)
+            if n == 1 then tab1Frame:Show(); tab2Frame:Hide()
+            else tab1Frame:Hide(); tab2Frame:Show() end
+        end
+    else
+        -- Fallback: simple flat tabs at the top
+        local function MakeTab(text, x)
+            local btn = CreateFrame("Button", nil, p)
+            btn:SetSize(panelW / 2 - 8, 22)
+            btn:SetPoint("TOPLEFT", x, -28)
+            local btnBg = btn:CreateTexture(nil, "BACKGROUND")
+            btnBg:SetAllPoints()
+            btn.bg = btnBg
+            local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+            btnText:SetPoint("CENTER")
+            btnText:SetText(text)
+            btn.label = btnText
+            return btn
+        end
+        tabBtn1 = MakeTab("Spells & Profiles", padX)
+        tabBtn2 = MakeTab("Settings", panelW / 2 + 2)
+        tab1Frame:SetPoint("TOPLEFT", 0, -56)
+        tab2Frame:SetPoint("TOPLEFT", 0, -56)
+
+        SetActiveTab = function(n)
+            if n == 1 then
+                tab1Frame:Show(); tab2Frame:Hide()
+                tabBtn1.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
+                tabBtn2.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
+                tabBtn1.label:SetTextColor(1, 1, 1)
+                tabBtn2.label:SetTextColor(0.6, 0.6, 0.6)
+            else
+                tab1Frame:Hide(); tab2Frame:Show()
+                tabBtn1.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
+                tabBtn2.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
+                tabBtn1.label:SetTextColor(0.6, 0.6, 0.6)
+                tabBtn2.label:SetTextColor(1, 1, 1)
+            end
         end
     end
 
@@ -1228,38 +1395,14 @@ local function CreateConfigPanel()
 
     -- Preset dropdown
     local presetLabel = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    presetLabel:SetPoint("TOPLEFT", padX, -6)
+    presetLabel:SetPoint("TOPLEFT", padX, -8)
     presetLabel:SetText("Preset:")
 
-    local presetBtn = CreateFrame("Button", "SimpleHealPresetBtn", t1)
-    presetBtn:SetSize(200, 22)
-    presetBtn:SetPoint("LEFT", presetLabel, "RIGHT", 8, 0)
-
-    local presetBtnBg = presetBtn:CreateTexture(nil, "BACKGROUND")
-    presetBtnBg:SetAllPoints()
-    presetBtnBg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-
-    local presetBtnText = presetBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    presetBtnText:SetPoint("LEFT", 6, 0)
-    presetBtnText:SetText("-- Choose class/spec --")
-    presetBtnText:SetJustifyH("LEFT")
-    presetBtn.text = presetBtnText
-
-    local presetArrow = presetBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    presetArrow:SetPoint("RIGHT", -6, 0)
-    presetArrow:SetText("v")
-
-    local dropdown = CreateFrame("Frame", "SimpleHealPresetDropdown", presetBtn, "BackdropTemplate")
-    dropdown:SetPoint("TOPLEFT", presetBtn, "BOTTOMLEFT", 0, -2)
-    dropdown:SetSize(200, #PRESETS * 20 + 6)
-    dropdown:SetFrameStrata("TOOLTIP")
-    dropdown:Hide()
-    dropdown:SetBackdrop({
-        bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
+    local presetDrop = CreateFrame("Frame", "SimpleHealPresetDrop", t1, "UIDropDownMenuTemplate")
+    presetDrop:SetPoint("LEFT", presetLabel, "RIGHT", -8, -2)
+    UIDropDownMenu_SetWidth(presetDrop, 180)
+    UIDropDownMenu_SetText(presetDrop, "-- Choose class/spec --")
+    p.presetDrop = presetDrop
 
     local function FillFromPreset(preset)
         p.takeSnapshot()
@@ -1273,126 +1416,91 @@ local function CreateConfigPanel()
             p.buffBoxes[slot]:SetText(b)
             db.buffs[slot] = b
         end
-        presetBtnText:SetText(preset.name)
-        dropdown:Hide()
+        UIDropDownMenu_SetText(presetDrop, preset.name)
         ApplyBindings()
         UpdateCanCastBuffs()
         print("|cff00ff00SimpleHeal:|r " .. preset.name .. " preset applied! (Undo button reverts)")
     end
 
-    for i, preset in ipairs(PRESETS) do
-        local item = CreateFrame("Button", nil, dropdown)
-        item:SetSize(194, 20)
-        item:SetPoint("TOPLEFT", 3, -3 - (i - 1) * 20)
-        local itemHl = item:CreateTexture(nil, "HIGHLIGHT")
-        itemHl:SetAllPoints()
-        itemHl:SetColorTexture(0.3, 0.6, 0.3, 0.4)
-        local itemText = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        itemText:SetPoint("LEFT", 6, 0)
-        itemText:SetText(preset.name)
-        item:SetScript("OnClick", function() FillFromPreset(preset) end)
-    end
-
-    presetBtn:SetScript("OnClick", function()
-        if dropdown:IsShown() then dropdown:Hide() else dropdown:Show() end
+    UIDropDownMenu_Initialize(presetDrop, function(self, level)
+        for _, preset in ipairs(PRESETS) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = preset.name
+            info.func = function()
+                FillFromPreset(preset)
+                CloseDropDownMenus()
+            end
+            info.notCheckable = true
+            UIDropDownMenu_AddButton(info, level)
+        end
     end)
-    AddTooltip(presetBtn, "Class Preset",
+    AddTooltip(presetDrop, "Class Preset",
         "Pick your class and spec - all spell bindings and buff tracking are applied instantly. Use the Undo button to revert.")
 
     -- Profile row
     local profLabel = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    profLabel:SetPoint("TOPLEFT", padX, -32)
+    profLabel:SetPoint("TOPLEFT", padX, -36)
     profLabel:SetText("Profile:")
 
-    local profBtn = CreateFrame("Button", "SimpleHealProfBtn", t1)
-    profBtn:SetSize(130, 22)
-    profBtn:SetPoint("LEFT", profLabel, "RIGHT", 8, 0)
-    local profBtnBg = profBtn:CreateTexture(nil, "BACKGROUND")
-    profBtnBg:SetAllPoints()
-    profBtnBg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-    local profBtnText = profBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    profBtnText:SetPoint("LEFT", 6, 0)
-    profBtnText:SetJustifyH("LEFT")
-    profBtnText:SetText(db.activeProfile or "Default")
-    p.profBtnText = profBtnText
-    local profArrow = profBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    profArrow:SetPoint("RIGHT", -6, 0)
-    profArrow:SetText("v")
-
-    local profDrop = CreateFrame("Frame", "SimpleHealProfDropdown", profBtn, "BackdropTemplate")
-    profDrop:SetPoint("TOPLEFT", profBtn, "BOTTOMLEFT", 0, -2)
-    profDrop:SetSize(130, 26)
-    profDrop:SetFrameStrata("TOOLTIP")
-    profDrop:Hide()
-    profDrop:SetBackdrop({
-        bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
+    local profDrop = CreateFrame("Frame", "SimpleHealProfDrop", t1, "UIDropDownMenuTemplate")
+    profDrop:SetPoint("LEFT", profLabel, "RIGHT", -8, -2)
+    UIDropDownMenu_SetWidth(profDrop, 110)
+    UIDropDownMenu_SetText(profDrop, db.activeProfile or "Default")
     p.profDrop = profDrop
+    AddTooltip(profDrop, "Profiles",
+        "Save different spell setups and switch between them - e.g. one for raids and one for PvP.")
 
-    local function RefreshProfDropdown()
-        for _, child in ipairs({ profDrop:GetChildren() }) do child:Hide() end
+    local function SwitchProfile(name)
+        if name == db.activeProfile then return end
+        p.saveCurrentToProfile()
+        local prof = name ~= "Default" and db.profiles[name] or nil
+        if prof then
+            for k, v in pairs(prof.spells) do db.spells[k] = v end
+            for i2 = 1, 4 do db.buffs[i2] = prof.buffs[i2] or "" end
+        end
+        db.activeProfile = name
+        UIDropDownMenu_SetText(profDrop, name)
+        for _, binding in ipairs(BINDINGS) do
+            p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
+        end
+        for s = 1, 4 do
+            p.buffBoxes[s]:SetText(db.buffs[s] or "")
+        end
+        ApplyBindings()
+        UpdateCanCastBuffs()
+        Layout()
+        print("|cff00ff00SimpleHeal:|r Loaded profile: " .. name)
+    end
+
+    UIDropDownMenu_Initialize(profDrop, function(self, level)
         if not db.profiles then db.profiles = {} end
         local names = {}
         for name in pairs(db.profiles) do names[#names + 1] = name end
         table.sort(names)
         table.insert(names, 1, "Default")
-        profDrop:SetSize(130, #names * 20 + 6)
-        for i, name in ipairs(names) do
-            local item = CreateFrame("Button", nil, profDrop)
-            item:SetSize(124, 20)
-            item:SetPoint("TOPLEFT", 3, -3 - (i - 1) * 20)
-            local hl = item:CreateTexture(nil, "HIGHLIGHT")
-            hl:SetAllPoints()
-            hl:SetColorTexture(0.3, 0.6, 0.3, 0.4)
-            local txt = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            txt:SetPoint("LEFT", 6, 0)
-            txt:SetText(name)
-            item:SetScript("OnClick", function()
-                profDrop:Hide()
-                if name == db.activeProfile then return end
-                p.saveCurrentToProfile()
-                local prof = name ~= "Default" and db.profiles[name] or nil
-                if prof then
-                    for k, v in pairs(prof.spells) do db.spells[k] = v end
-                    for i2 = 1, 4 do db.buffs[i2] = prof.buffs[i2] or "" end
-                end
-                db.activeProfile = name
-                profBtnText:SetText(name)
-                for _, binding in ipairs(BINDINGS) do
-                    p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
-                end
-                for s = 1, 4 do
-                    p.buffBoxes[s]:SetText(db.buffs[s] or "")
-                end
-                ApplyBindings()
-                UpdateCanCastBuffs()
-                Layout()
-                print("|cff00ff00SimpleHeal:|r Loaded profile: " .. name)
-            end)
+        for _, name in ipairs(names) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = name
+            info.func = function()
+                SwitchProfile(name)
+                CloseDropDownMenus()
+            end
+            info.checked = (name == (db.activeProfile or "Default"))
+            UIDropDownMenu_AddButton(info, level)
         end
-    end
-    p.RefreshProfDropdown = RefreshProfDropdown
-
-    profBtn:SetScript("OnClick", function()
-        if profDrop:IsShown() then profDrop:Hide() else RefreshProfDropdown(); profDrop:Show() end
     end)
-    AddTooltip(profBtn, "Profiles",
-        "Save different spell setups and switch between them - e.g. one for raids and one for PvP.")
 
     local profSaveBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
-    profSaveBtn:SetSize(60, 20)
-    profSaveBtn:SetPoint("LEFT", profBtn, "RIGHT", 4, 0)
+    profSaveBtn:SetSize(70, 20)
+    profSaveBtn:SetPoint("TOPLEFT", padX + 44, -64)
     profSaveBtn:SetText("Save As")
     profSaveBtn:SetScript("OnClick", function()
         StaticPopup_Show("SIMPLEHEAL_SAVE_PROFILE")
     end)
 
     local profDelBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
-    profDelBtn:SetSize(40, 20)
-    profDelBtn:SetPoint("LEFT", profSaveBtn, "RIGHT", 2, 0)
+    profDelBtn:SetSize(50, 20)
+    profDelBtn:SetPoint("LEFT", profSaveBtn, "RIGHT", 4, 0)
     profDelBtn:SetText("Del")
     profDelBtn:SetScript("OnClick", function()
         local name = db.activeProfile or "Default"
@@ -1402,13 +1510,13 @@ local function CreateConfigPanel()
         end
         if db.profiles then db.profiles[name] = nil end
         db.activeProfile = "Default"
-        profBtnText:SetText("Default")
+        UIDropDownMenu_SetText(profDrop, "Default")
         print("|cff00ff00SimpleHeal:|r Deleted profile: " .. name)
     end)
 
     local profUndoBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
-    profUndoBtn:SetSize(40, 20)
-    profUndoBtn:SetPoint("LEFT", profDelBtn, "RIGHT", 2, 0)
+    profUndoBtn:SetSize(50, 20)
+    profUndoBtn:SetPoint("LEFT", profDelBtn, "RIGHT", 4, 0)
     profUndoBtn:SetText("Undo")
     p.profUndoBtn = profUndoBtn
 
@@ -1449,18 +1557,60 @@ local function CreateConfigPanel()
 
     -- Spell bindings
     local spellHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    spellHeader:SetPoint("TOPLEFT", padX, -58)
+    spellHeader:SetPoint("TOPLEFT", padX, -92)
     spellHeader:SetText("Spell Bindings")
     spellHeader:SetTextColor(1, 0.82, 0)
 
     local spellHint = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     spellHint:SetPoint("LEFT", spellHeader, "RIGHT", 6, 0)
-    spellHint:SetText("(spell names as in your spellbook)")
+    spellHint:SetText("(green = known, red = unknown)")
+
+    -- Live validation: green if in spellbook, red if not
+    local function AttachValidation(eb)
+        eb:HookScript("OnTextChanged", function(self)
+            local text = self:GetText()
+            if not text or text == "" then
+                self:SetTextColor(1, 1, 1)
+                return
+            end
+            local base = text:match("^(.-)%s*%(") or text
+            if KnownSpell(base:match("^%s*(.-)%s*$")) then
+                self:SetTextColor(0.5, 1, 0.5)
+            else
+                self:SetTextColor(1, 0.45, 0.45)
+            end
+        end)
+    end
+
+    -- Autocomplete from spellbook (chat-style: fills and highlights the rest)
+    local function AttachAutocomplete(eb, tokenized)
+        eb:SetScript("OnChar", function(self)
+            local text = self:GetText()
+            if self:GetCursorPosition() ~= #text then return end
+            local prefix, token = "", text
+            if tokenized then
+                prefix, token = text:match("^(.-)([^,]*)$")
+            end
+            local search = token:match("^%s*(.-)$")
+            local pad = token:sub(1, #token - #search)
+            if #search < 2 then return end
+            local lower = search:lower()
+            for _, name in ipairs(spellbookNames) do
+                if name:lower():sub(1, #search) == lower and #name > #search then
+                    self:SetText(prefix .. pad .. name)
+                    self:HighlightText(#text, -1)
+                    self:SetCursorPosition(#text)
+                    break
+                end
+            end
+        end)
+    end
 
     p.editBoxes = {}
-    local spellTop = 72
+    local spellTop = 106
     for i, binding in ipairs(BINDINGS) do
-        local y = -spellTop - (i - 1) * rowH
+        local extra = i > 8 and 24 or 0  -- gap before scroll-wheel group
+        local y = -spellTop - (i - 1) * rowH - extra
         local label = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         label:SetPoint("TOPLEFT", padX, y)
         label:SetWidth(120)
@@ -1473,11 +1623,25 @@ local function CreateConfigPanel()
         eb:SetMaxLetters(40)
         eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        AttachValidation(eb)
+        AttachAutocomplete(eb, false)
         p.editBoxes[binding.key] = eb
     end
 
+    -- Divider between click and scroll bindings
+    local scrollY = -spellTop - 8 * rowH
+    local dividerLine = t1:CreateTexture(nil, "ARTWORK")
+    dividerLine:SetPoint("TOPLEFT", padX, scrollY - 2)
+    dividerLine:SetPoint("TOPRIGHT", -padX, scrollY - 2)
+    dividerLine:SetHeight(1)
+    dividerLine:SetColorTexture(0.4, 0.4, 0.4, 0.6)
+
+    local scrollHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    scrollHeader:SetPoint("TOPLEFT", padX, scrollY - 8)
+    scrollHeader:SetText("Scroll wheel")
+
     -- Buff tracking
-    local buffTop = spellTop + #BINDINGS * rowH + 10
+    local buffTop = spellTop + #BINDINGS * rowH + 24 + 10
     local buffHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     buffHeader:SetPoint("TOPLEFT", padX, -buffTop + 14)
     buffHeader:SetText("Missing Buff Alerts")
@@ -1499,12 +1663,32 @@ local function CreateConfigPanel()
         label:SetPoint("LEFT", colorSwatch, "RIGHT", 4, 0)
         label:SetText("Buff " .. slot .. ":")
         local eb = CreateFrame("EditBox", "SimpleHealBuff" .. slot, t1, "InputBoxTemplate")
-        eb:SetSize(210, 20)
+        eb:SetSize(190, 20)
         eb:SetPoint("TOPLEFT", padX + 88, y + 2)
         eb:SetAutoFocus(false)
         eb:SetMaxLetters(80)
         eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        AttachAutocomplete(eb, true)
+
+        -- Spell icon preview (first name in the list)
+        local iconPrev = t1:CreateTexture(nil, "OVERLAY")
+        iconPrev:SetSize(18, 18)
+        iconPrev:SetPoint("LEFT", eb, "RIGHT", 6, 0)
+        iconPrev:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+        iconPrev:Hide()
+        eb:HookScript("OnTextChanged", function(self)
+            local text = self:GetText() or ""
+            local first = text:match("^([^,]+)")
+            local icon = first and select(3, GetSpellInfo(first:match("^%s*(.-)%s*$")))
+            if icon then
+                iconPrev:SetTexture(icon)
+                iconPrev:Show()
+            else
+                iconPrev:Hide()
+            end
+        end)
+
         p.buffBoxes[slot] = eb
     end
 
@@ -1515,89 +1699,37 @@ local function CreateConfigPanel()
 
     -- Spec filter dropdown
     local specLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    specLabel:SetPoint("TOPLEFT", padX, -6)
+    specLabel:SetPoint("TOPLEFT", padX, -8)
     specLabel:SetText("Show only for:")
-
-    local specBtn = CreateFrame("Button", "SimpleHealSpecBtn", t2)
-    specBtn:SetSize(170, 22)
-    specBtn:SetPoint("LEFT", specLabel, "RIGHT", 8, 0)
-
-    local specBtnBg = specBtn:CreateTexture(nil, "BACKGROUND")
-    specBtnBg:SetAllPoints()
-    specBtnBg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-
-    local specBtnText = specBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    specBtnText:SetPoint("LEFT", 6, 0)
-    specBtnText:SetJustifyH("LEFT")
-    p.specBtnText = specBtnText
-
-    local specArrow = specBtn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    specArrow:SetPoint("RIGHT", -6, 0)
-    specArrow:SetText("v")
-
-    local specDrop = CreateFrame("Frame", "SimpleHealSpecDropdown", specBtn, "BackdropTemplate")
-    specDrop:SetPoint("TOPLEFT", specBtn, "BOTTOMLEFT", 0, -2)
-    specDrop:SetSize(170, 4 * 20 + 6)
-    specDrop:SetFrameStrata("TOOLTIP")
-    specDrop:Hide()
-    specDrop:SetBackdrop({
-        bgFile   = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-        tile = true, tileSize = 16, edgeSize = 12,
-        insets = { left = 3, right = 3, top = 3, bottom = 3 },
-    })
 
     p.selectedSpecTree = 0
 
-    local alwaysItem = CreateFrame("Button", nil, specDrop)
-    alwaysItem:SetSize(164, 20)
-    alwaysItem:SetPoint("TOPLEFT", 3, -3)
-    local alwaysHl = alwaysItem:CreateTexture(nil, "HIGHLIGHT")
-    alwaysHl:SetAllPoints()
-    alwaysHl:SetColorTexture(0.3, 0.6, 0.3, 0.4)
-    local alwaysText = alwaysItem:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    alwaysText:SetPoint("LEFT", 6, 0)
-    alwaysText:SetText("Always Show")
-    alwaysItem:SetScript("OnClick", function()
-        p.selectedSpecTree = 0
-        specBtnText:SetText("Always Show")
-        specDrop:Hide()
-    end)
+    local specDrop = CreateFrame("Frame", "SimpleHealSpecDrop", t2, "UIDropDownMenuTemplate")
+    specDrop:SetPoint("LEFT", specLabel, "RIGHT", -8, -2)
+    UIDropDownMenu_SetWidth(specDrop, 140)
+    UIDropDownMenu_SetText(specDrop, "Always Show")
+    p.specDrop = specDrop
+    AddTooltip(specDrop, "Show only for",
+        "Only show SimpleHeal in the chosen talent tree. In your off-spec the Blizzard frames come back automatically.")
 
-    p.specTreeItems = {}
-    for t = 1, 3 do
-        local item = CreateFrame("Button", nil, specDrop)
-        item:SetSize(164, 20)
-        item:SetPoint("TOPLEFT", 3, -3 - t * 20)
-        local hl = item:CreateTexture(nil, "HIGHLIGHT")
-        hl:SetAllPoints()
-        hl:SetColorTexture(0.3, 0.6, 0.3, 0.4)
-        local txt = item:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        txt:SetPoint("LEFT", 6, 0)
-        txt:SetText("Tree " .. t)
-        item.label = txt
-        item:SetScript("OnClick", function()
-            p.selectedSpecTree = t
-            specBtnText:SetText(txt:GetText())
-            specDrop:Hide()
-        end)
-        p.specTreeItems[t] = item
-    end
-
-    specBtn:SetScript("OnClick", function()
-        if specDrop:IsShown() then
-            specDrop:Hide()
-        else
-            local names = GetTreeNames()
-            for t = 1, 3 do
-                if names[t] then
-                    p.specTreeItems[t].label:SetText(names[t])
-                    p.specTreeItems[t]:Show()
-                else
-                    p.specTreeItems[t]:Hide()
-                end
+    UIDropDownMenu_Initialize(specDrop, function(self, level)
+        local function AddItem(text, tree)
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = text
+            info.func = function()
+                p.selectedSpecTree = tree
+                UIDropDownMenu_SetText(specDrop, text)
+                db.specTree = tree
+                UpdateSpecVisibility()
+                CloseDropDownMenus()
             end
-            specDrop:Show()
+            info.checked = (p.selectedSpecTree == tree)
+            UIDropDownMenu_AddButton(info, level)
+        end
+        AddItem("Always Show", 0)
+        local names = GetTreeNames()
+        for t = 1, 3 do
+            if names[t] then AddItem(names[t], t) end
         end
     end)
 
@@ -1675,14 +1807,27 @@ local function CreateConfigPanel()
     end)
     p.fSlider = fSlider
 
+    local iSlider = MakeSlider("Icon", 6, 20, 1, padX + 80, sliderTop - 138, 220)
+    iSlider:SetValue(db.iconSize or 10)
+    if iSlider.Text then iSlider.Text:SetText("Icon size: " .. (db.iconSize or 10)) end
+    iSlider:SetScript("OnValueChanged", function(self, val)
+        val = math.floor(val)
+        if self.Text then self.Text:SetText("Icon size: " .. val) end
+        db.iconSize = val
+        ApplyIconSize()
+    end)
+    p.iSlider = iSlider
+    AddTooltip(iSlider, "Icon size",
+        "Size of the HoT icons (bottom-left) and missing-buff indicators (top-right) on each frame.")
+
     -- Appearance
     local texHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    texHeader:SetPoint("TOPLEFT", padX, sliderTop - 134)
+    texHeader:SetPoint("TOPLEFT", padX, sliderTop - 164)
     texHeader:SetText("Appearance")
     texHeader:SetTextColor(1, 0.82, 0)
 
     local texLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    texLabel:SetPoint("TOPLEFT", padX, sliderTop - 156)
+    texLabel:SetPoint("TOPLEFT", padX, sliderTop - 186)
     texLabel:SetText("Bar Texture")
 
     local texDrop = CreateFrame("Frame", "SimpleHealBarTextureDrop", t2, "UIDropDownMenuTemplate")
@@ -1709,7 +1854,7 @@ local function CreateConfigPanel()
     -- Layout mode dropdown
     local LAYOUT_MODES = { "Columns (by role)", "Rows (by role)", "Compact grid" }
     local layoutLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    layoutLabel:SetPoint("TOPLEFT", padX, sliderTop - 186)
+    layoutLabel:SetPoint("TOPLEFT", padX, sliderTop - 216)
     layoutLabel:SetText("Layout")
 
     local layoutDrop = CreateFrame("Frame", "SimpleHealLayoutDrop", t2, "UIDropDownMenuTemplate")
@@ -1734,7 +1879,7 @@ local function CreateConfigPanel()
     -- Color mode dropdown
     local COLOR_MODES = { "Class-colored bars", "Dark bars, colored names" }
     local colorLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    colorLabel:SetPoint("TOPLEFT", padX, sliderTop - 216)
+    colorLabel:SetPoint("TOPLEFT", padX, sliderTop - 246)
     colorLabel:SetText("Colors")
 
     local colorDrop = CreateFrame("Frame", "SimpleHealColorDrop", t2, "UIDropDownMenuTemplate")
@@ -1757,7 +1902,7 @@ local function CreateConfigPanel()
     end)
 
     -- Checkboxes
-    local cbTop = sliderTop - 252
+    local cbTop = sliderTop - 282
 
     local function MakeCheckbox(label, x, y)
         local cb = CreateFrame("CheckButton", nil, t2, "UICheckButtonTemplate")
@@ -1811,7 +1956,7 @@ local function CreateConfigPanel()
     p.cbGroupOnly = cbGroupOnly
     AddTooltip(cbGroupOnly, "Only show in group/raid", "Hides SimpleHeal when you are solo.")
 
-    local cbShowPets = MakeCheckbox("Show pets", padX, cbTop - 92)
+    local cbShowPets = MakeCheckbox("Show pets", padX + 170, cbTop - 4)
     cbShowPets:SetChecked(db.showPets ~= false)
     cbShowPets:SetScript("OnClick", function(self)
         db.showPets = self:GetChecked() and true or false
@@ -1819,6 +1964,39 @@ local function CreateConfigPanel()
     end)
     p.cbShowPets = cbShowPets
     AddTooltip(cbShowPets, "Show pets", "Shows hunter/warlock pets as small frames below their owner.")
+
+    local cbPercent = MakeCheckbox("Health as %", padX + 170, cbTop - 26)
+    cbPercent:SetChecked(db.hpPercent or false)
+    cbPercent:SetScript("OnClick", function(self)
+        db.hpPercent = self:GetChecked() and true or false
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then Refresh(f) end
+        end
+    end)
+    p.cbPercent = cbPercent
+    AddTooltip(cbPercent, "Health as %", "Shows health as a percentage instead of the missing-health number.")
+
+    local cbTitle = MakeCheckbox("Show title", padX + 170, cbTop - 48)
+    cbTitle:SetChecked(db.showTitle ~= false)
+    cbTitle:SetScript("OnClick", function(self)
+        db.showTitle = self:GetChecked() and true or false
+        if container and container.handleText then
+            if db.showTitle then container.handleText:Show() else container.handleText:Hide() end
+        end
+    end)
+    p.cbTitle = cbTitle
+    AddTooltip(cbTitle, "Show title", "Shows the SimpleHeal label on the drag handle above the frames.")
+
+    local cbRoleIcons = MakeCheckbox("Role icons", padX + 170, cbTop - 70)
+    cbRoleIcons:SetChecked(db.roleIcons ~= false)
+    cbRoleIcons:SetScript("OnClick", function(self)
+        db.roleIcons = self:GetChecked() and true or false
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then Refresh(f) end
+        end
+    end)
+    p.cbRoleIcons = cbRoleIcons
+    AddTooltip(cbRoleIcons, "Role icons", "Shows a small tank/healer icon next to the name on each frame.")
 
     -- Import/Export
     local ieHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -1944,9 +2122,7 @@ local function CreateConfigPanel()
         UpdateSpecVisibility()
         Layout()
         SavePosition()
-        dropdown:Hide()
-        specDrop:Hide()
-        profDrop:Hide()
+        CloseDropDownMenus()
         p:Hide()
         print("|cff00ff00SimpleHeal:|r Settings saved!")
 
@@ -1986,8 +2162,8 @@ local function CreateConfigPanel()
             p.buffBoxes[slot]:SetText("")
         end
         p.selectedSpecTree = 0
-        specBtnText:SetText("Always Show")
-        presetBtnText:SetText("-- Choose class/spec --")
+        UIDropDownMenu_SetText(specDrop, "Always Show")
+        UIDropDownMenu_SetText(presetDrop, "-- Choose class/spec --")
     end)
 
     configPanel = p
@@ -2001,26 +2177,32 @@ local function ShowConfig()
     for slot = 1, 4 do
         configPanel.buffBoxes[slot]:SetText(db.buffs[slot] or "")
     end
+    -- Rebuild spellbook list for autocomplete
+    RebuildSpellbookNames()
     -- Restore spec selection
     configPanel.selectedSpecTree = db.specTree or 0
-    if db.specTree == 0 then
-        configPanel.specBtnText:SetText("Always Show")
+    if (db.specTree or 0) == 0 then
+        UIDropDownMenu_SetText(configPanel.specDrop, "Always Show")
     else
         local names = GetTreeNames()
-        configPanel.specBtnText:SetText(names[db.specTree] or ("Tree " .. db.specTree))
+        UIDropDownMenu_SetText(configPanel.specDrop, names[db.specTree] or ("Tree " .. db.specTree))
     end
     -- Restore size sliders
     configPanel.wSlider:SetValue(db.frameW)
     configPanel.hSlider:SetValue(db.frameH)
     configPanel.aSlider:SetValue(math.floor((db.frameAlpha or 1) * 100))
     configPanel.fSlider:SetValue(db.fontSize or 10)
+    configPanel.iSlider:SetValue(db.iconSize or 10)
     configPanel.cbShowPets:SetChecked(db.showPets ~= false)
+    configPanel.cbPercent:SetChecked(db.hpPercent or false)
+    configPanel.cbTitle:SetChecked(db.showTitle ~= false)
+    configPanel.cbRoleIcons:SetChecked(db.roleIcons ~= false)
     -- Restore checkboxes
     configPanel.cbLock:SetChecked(db.locked)
     configPanel.cbTarget:SetChecked(db.clickTarget)
     configPanel.cbHideBlizz:SetChecked(db.hideBlizzFrames or false)
     configPanel.cbGroupOnly:SetChecked(db.groupOnly or false)
-    configPanel.profBtnText:SetText(db.activeProfile or "Default")
+    UIDropDownMenu_SetText(configPanel.profDrop, db.activeProfile or "Default")
     configPanel:Show()
 end
 
@@ -2049,6 +2231,8 @@ local function CreateContainer()
     hText:SetPoint("CENTER")
     hText:SetText("SimpleHeal")
     hText:SetTextColor(1, 1, 1)
+    container.handleText = hText
+    if db and db.showTitle == false then hText:Hide() end
 
     handle:SetScript("OnMouseDown", function(_, btn)
         if btn == "LeftButton" and not db.locked then container:StartMoving() end
@@ -2558,35 +2742,61 @@ end
 ----------------------------------------------
 local function Init()
     if not SimpleHealDB then SimpleHealDB = {} end
-    if not SimpleHealDB.spells then SimpleHealDB.spells = {} end
+    if not SimpleHealDB.chars then SimpleHealDB.chars = {} end
+
+    -- Per-character settings
+    local charKey = UnitName("player") .. "-" .. (GetRealmName() or "Realm")
+    local cdb = SimpleHealDB.chars[charKey]
+    if not cdb then
+        cdb = {}
+        SimpleHealDB.chars[charKey] = cdb
+        -- One-time migration: move old account-wide settings to this character
+        if SimpleHealDB.spells then
+            local keys = {}
+            for k in pairs(SimpleHealDB) do
+                if k ~= "chars" then keys[#keys + 1] = k end
+            end
+            for _, k in ipairs(keys) do
+                cdb[k] = SimpleHealDB[k]
+                SimpleHealDB[k] = nil
+            end
+            print("|cff00ff00SimpleHeal:|r Settings are now saved per character.")
+        end
+    end
+
+    if not cdb.spells then cdb.spells = {} end
     for k, v in pairs(DEFAULTS.spells) do
-        if SimpleHealDB.spells[k] == nil then
-            SimpleHealDB.spells[k] = v
+        if cdb.spells[k] == nil then
+            cdb.spells[k] = v
         end
     end
-    if not SimpleHealDB.buffs then SimpleHealDB.buffs = {} end
+    if not cdb.buffs then cdb.buffs = {} end
     for i = 1, 4 do
-        if SimpleHealDB.buffs[i] == nil then
-            SimpleHealDB.buffs[i] = DEFAULTS.buffs[i]
+        if cdb.buffs[i] == nil then
+            cdb.buffs[i] = DEFAULTS.buffs[i]
         end
     end
-    if SimpleHealDB.locked   == nil then SimpleHealDB.locked   = DEFAULTS.locked end
-    if SimpleHealDB.frameW   == nil then SimpleHealDB.frameW   = DEFAULTS.frameW end
-    if SimpleHealDB.frameH   == nil then SimpleHealDB.frameH   = DEFAULTS.frameH end
-    if SimpleHealDB.specTree     == nil then SimpleHealDB.specTree     = DEFAULTS.specTree end
-    if SimpleHealDB.minimapAngle == nil then SimpleHealDB.minimapAngle = 220 end
-    if SimpleHealDB.clickTarget == nil then SimpleHealDB.clickTarget = DEFAULTS.clickTarget end
-    if SimpleHealDB.hideBlizzFrames == nil then SimpleHealDB.hideBlizzFrames = false end
-    if SimpleHealDB.groupOnly == nil then SimpleHealDB.groupOnly = false end
-    if SimpleHealDB.frameAlpha == nil then SimpleHealDB.frameAlpha = 1 end
-    if SimpleHealDB.barTexture == nil then SimpleHealDB.barTexture = 1 end
-    if SimpleHealDB.layoutMode == nil then SimpleHealDB.layoutMode = 1 end
-    if SimpleHealDB.showPets == nil then SimpleHealDB.showPets = true end
-    if SimpleHealDB.fontSize == nil then SimpleHealDB.fontSize = 10 end
-    if SimpleHealDB.colorMode == nil then SimpleHealDB.colorMode = 1 end
-    if not SimpleHealDB.profiles then SimpleHealDB.profiles = {} end
-    if not SimpleHealDB.activeProfile then SimpleHealDB.activeProfile = "Default" end
-    db = SimpleHealDB
+    if cdb.locked   == nil then cdb.locked   = DEFAULTS.locked end
+    if cdb.frameW   == nil then cdb.frameW   = DEFAULTS.frameW end
+    if cdb.frameH   == nil then cdb.frameH   = DEFAULTS.frameH end
+    if cdb.specTree     == nil then cdb.specTree     = DEFAULTS.specTree end
+    if cdb.minimapAngle == nil then cdb.minimapAngle = 220 end
+    if cdb.clickTarget == nil then cdb.clickTarget = DEFAULTS.clickTarget end
+    if cdb.hideBlizzFrames == nil then cdb.hideBlizzFrames = false end
+    if cdb.groupOnly == nil then cdb.groupOnly = false end
+    if cdb.frameAlpha == nil then cdb.frameAlpha = 1 end
+    if cdb.barTexture == nil then cdb.barTexture = 1 end
+    if cdb.layoutMode == nil then cdb.layoutMode = 1 end
+    if cdb.showPets == nil then cdb.showPets = true end
+    if cdb.fontSize == nil then cdb.fontSize = 10 end
+    if cdb.colorMode == nil then cdb.colorMode = 1 end
+    if cdb.hpPercent == nil then cdb.hpPercent = false end
+    if cdb.showTitle == nil then cdb.showTitle = true end
+    if cdb.iconSize == nil then cdb.iconSize = 10 end
+    if cdb.roleIcons == nil then cdb.roleIcons = true end
+    if not cdb.profiles then cdb.profiles = {} end
+    if not cdb.activeProfile then cdb.activeProfile = "Default" end
+    db = cdb
 
     -- Auto-apply class preset on first use + welcome message
     if not db.presetApplied then
@@ -2631,6 +2841,7 @@ local function Init()
     ApplyBindings()
     UpdateCanCastBuffs()
     ApplyFontSize()
+    ApplyIconSize()
     RestorePosition()
     Layout()
     UpdateSpecVisibility()
