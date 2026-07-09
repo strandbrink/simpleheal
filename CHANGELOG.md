@@ -1,5 +1,13 @@
 # SimpleHeal Changelog
 
+## v1.6.1
+- Fixed: casting on an out-of-range player no longer falls back to healing yourself (all casts now use hard @unit macro conditionals)
+- Grid layout rework: two grid modes - groups as rows or groups as columns. Players are sorted by raid subgroup in stable roster order, so frames no longer shuffle around during battlegrounds
+- Binding spell fields now allow 255 characters (was 40) - room for full macros
+- Up to 20 click bindings in a scrollable list
+- Fixed: Blizzard raid/party frames reappearing on every group change
+- Fixed: missing-health text overlapping HoT icons in two-line text mode (now centered)
+
 ## v1.6.0
 - New three-tab settings panel: Spells / Display / Advanced
 - Health text options: missing health, percent, or both

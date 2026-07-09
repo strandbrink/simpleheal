@@ -36,7 +36,7 @@ local SCROLL_BINDINGS = {
 local MOD_OPTIONS = { "", "shift", "ctrl", "alt" }
 local MOD_LABELS  = { [""] = "None", shift = "Shift", ctrl = "Ctrl", alt = "Alt" }
 local BTN_LABELS  = { "Left", "Right", "Middle", "Btn 4", "Btn 5" }
-local MAX_CLICK_BINDINGS = 10
+local MAX_CLICK_BINDINGS = 20
 
 -- Old fixed keys -> {modifier, button} (for presets, migration and legacy import)
 local LEGACY_KEY_MAP = {
@@ -283,7 +283,7 @@ local function ApplyTextLayout()
             if twoLine then
                 f.name:SetPoint("TOP", 0, -3)
                 f.name:SetJustifyH("CENTER")
-                f.deficit:SetPoint("BOTTOM", 0, 3)
+                f.deficit:SetPoint("CENTER", 0, -4)
                 f.deficit:SetJustifyH("CENTER")
             else
                 f.name:SetPoint("LEFT", 4, 0)
@@ -1009,8 +1009,11 @@ local function ApplyBindings()
                         f:SetAttribute(prefix .. "macrotext" .. b.btn,
                             "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
                     else
-                        f:SetAttribute(prefix .. "type" .. b.btn, "spell")
-                        f:SetAttribute(prefix .. "spell" .. b.btn, b.spell)
+                        -- Hard [@unit] macro: if the unit is invalid/out of range the cast
+                        -- fails instead of falling back to self-cast
+                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
+                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
+                            "/cast [@" .. u .. "] " .. b.spell)
                     end
                 end
             end
@@ -1024,21 +1027,21 @@ local function ApplyBindings()
             f:SetAttribute("type1", "target")
         end
 
-        local function SetScrollBinding(btn, attr_type, attr_spell, key)
+        local function SetScrollBinding(btn, attr_type, attr_macro, key)
             local sp = Spell(key)
             if sp then
-                btn:SetAttribute(attr_type, "spell")
-                btn:SetAttribute(attr_spell, sp)
+                btn:SetAttribute(attr_type, "macro")
+                btn:SetAttribute(attr_macro, "/cast [@" .. u .. "] " .. sp)
             else
                 btn:SetAttribute(attr_type, nil)
-                btn:SetAttribute(attr_spell, nil)
+                btn:SetAttribute(attr_macro, nil)
             end
         end
 
-        SetScrollBinding(f.scrollUp, "type", "spell", "SCROLL_UP")
-        SetScrollBinding(f.scrollUp, "shift-type", "shift-spell", "SHIFT_SCROLL_UP")
-        SetScrollBinding(f.scrollDown, "type", "spell", "SCROLL_DOWN")
-        SetScrollBinding(f.scrollDown, "shift-type", "shift-spell", "SHIFT_SCROLL_DOWN")
+        SetScrollBinding(f.scrollUp, "type", "macrotext", "SCROLL_UP")
+        SetScrollBinding(f.scrollUp, "shift-type", "shift-macrotext", "SHIFT_SCROLL_UP")
+        SetScrollBinding(f.scrollDown, "type", "macrotext", "SCROLL_DOWN")
+        SetScrollBinding(f.scrollDown, "shift-type", "shift-macrotext", "SHIFT_SCROLL_DOWN")
     end
 end
 
@@ -1859,11 +1862,20 @@ local function CreateConfigPanel()
         end
     end
 
+    -- Scrollable binding list (10 rows visible, up to MAX_CLICK_BINDINGS total)
+    local VISIBLE_BIND_ROWS = 10
+    local bindScroll = CreateFrame("ScrollFrame", "SimpleHealBindScroll", t1, "UIPanelScrollFrameTemplate")
+    bindScroll:SetPoint("TOPLEFT", padX, -bindTop)
+    bindScroll:SetSize(panelW - padX * 2 - 20, VISIBLE_BIND_ROWS * bindRowH)
+
+    local bindChild = CreateFrame("Frame", nil, bindScroll)
+    bindChild:SetSize(panelW - padX * 2 - 20, MAX_CLICK_BINDINGS * bindRowH)
+    bindScroll:SetScrollChild(bindChild)
+
     for i = 1, MAX_CLICK_BINDINGS do
-        local rowY = -bindTop - (i - 1) * bindRowH
-        local row = CreateFrame("Frame", nil, t1)
-        row:SetSize(panelW - padX * 2, 22)
-        row:SetPoint("TOPLEFT", padX, rowY)
+        local row = CreateFrame("Frame", nil, bindChild)
+        row:SetSize(panelW - padX * 2 - 20, 22)
+        row:SetPoint("TOPLEFT", 0, -(i - 1) * bindRowH)
 
         local modBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
         modBtn:SetSize(48, 20)
@@ -1894,10 +1906,10 @@ local function CreateConfigPanel()
         AddTooltip(btnBtn, "Mouse button", "Click to cycle: Left / Right / Middle / Button 4 / Button 5")
 
         local eb = CreateFrame("EditBox", "SimpleHealBindEB" .. i, row, "InputBoxTemplate")
-        eb:SetSize(160, 20)
+        eb:SetSize(140, 20)
         eb:SetPoint("LEFT", btnBtn, "RIGHT", 8, 0)
         eb:SetAutoFocus(false)
-        eb:SetMaxLetters(40)
+        eb:SetMaxLetters(255)
         eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
         eb:HookScript("OnEditFocusLost", function(self)
@@ -1927,6 +1939,7 @@ local function CreateConfigPanel()
     local addBindBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
     addBindBtn:SetSize(110, 20)
     addBindBtn:SetText("+ Add binding")
+    addBindBtn:SetPoint("TOPLEFT", padX, -bindTop - VISIBLE_BIND_ROWS * bindRowH - 4)
     addBindBtn:SetScript("OnClick", function()
         if #db.bindings >= MAX_CLICK_BINDINGS then
             print("|cff00ff00SimpleHeal:|r Max " .. MAX_CLICK_BINDINGS .. " bindings.")
@@ -1934,6 +1947,8 @@ local function CreateConfigPanel()
         end
         db.bindings[#db.bindings + 1] = { mod = "", btn = 1, spell = "" }
         p.RefreshBindingRows()
+        -- Scroll to the new row
+        bindScroll:SetVerticalScroll(math.max(0, #db.bindings * bindRowH - VISIBLE_BIND_ROWS * bindRowH))
     end)
 
     local dupWarning = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -1967,8 +1982,6 @@ local function CreateConfigPanel()
                 row:Hide()
             end
         end
-        addBindBtn:ClearAllPoints()
-        addBindBtn:SetPoint("TOPLEFT", padX, -bindTop - #db.bindings * bindRowH - 2)
         if #db.bindings >= MAX_CLICK_BINDINGS then
             addBindBtn:Disable()
         else
@@ -1979,7 +1992,7 @@ local function CreateConfigPanel()
     p.RefreshBindingRows()
 
     -- Scroll wheel bindings (fixed rows below the click bindings)
-    local scrollY = -bindTop - MAX_CLICK_BINDINGS * bindRowH - 28
+    local scrollY = -bindTop - VISIBLE_BIND_ROWS * bindRowH - 32
     local dividerLine = t1:CreateTexture(nil, "ARTWORK")
     dividerLine:SetPoint("TOPLEFT", padX, scrollY + 8)
     dividerLine:SetPoint("TOPRIGHT", -padX, scrollY + 8)
@@ -2232,7 +2245,7 @@ local function CreateConfigPanel()
     end)
 
     -- Layout mode dropdown
-    local LAYOUT_MODES = { "Columns (by role)", "Rows (by role)", "Compact grid" }
+    local LAYOUT_MODES = { "Columns (by role)", "Rows (by role)", "Grid (groups as rows)", "Grid (groups as columns)" }
     local layoutLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     layoutLabel:SetPoint("TOPLEFT", padX, sliderTop - 216)
     layoutLabel:SetText("Layout")
@@ -3137,72 +3150,93 @@ Layout = function()
         container:SetSize(maxCols * (fw + GAP) - GAP, y - GAP)
 
     else
-        -- Grid: all units in a compact grid, no role labels, 5 per row
-        local MAX_GRID_COLS = 5
-        local all = {}
-        for _, roleKey in ipairs(ROLE_ORDER) do
-            for _, f in ipairs(roleGroups[roleKey]) do
-                all[#all + 1] = f
-            end
-        end
+        -- Grid: players grouped by raid subgroup, in stable raid-roster order
+        -- (no re-sorting mid-fight). Mode 3 = groups as rows, mode 4 = groups as columns.
+        local vertical = (mode == 4)
+        local groups = {}
+        local groupOrder = {}
 
-        -- Dead/offline last (stable: keep role order within each group)
-        local alive, gone = {}, {}
-        for _, f in ipairs(all) do
-            if UnitIsDeadOrGhost(f.unit) or not UnitIsConnected(f.unit) then
-                gone[#gone + 1] = f
-            else
-                alive[#alive + 1] = f
-            end
-        end
-        all = alive
-        for _, f in ipairs(gone) do all[#all + 1] = f end
-
-        local x, y = 0, 0
-        local count = 0
-        local rows = 1
-        for _, f in ipairs(all) do
-            if count >= MAX_GRID_COLS then
-                y = y + fh + GAP
-                x = 0
-                count = 0
-                rows = rows + 1
-            end
-            f:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
-            f:Show()
-            x = x + fw + GAP
-            count = count + 1
-        end
-
-        -- Pets on their own row below the grid
-        if showPets then
-            local petX = 0
-            local petCount = 0
-            local petRowStarted = false
-            for _, f in ipairs(all) do
-                local pf = GetPetFrame(f)
-                if pf then
-                    if not petRowStarted then
-                        y = y + fh + GAP
-                        petRowStarted = true
+        if inRaid and totalMembers > 0 then
+            for i = 1, 40 do
+                local rName, _, subgroup = GetRaidRosterInfo(i)
+                if rName then
+                    local f = allFrames["raid" .. i]
+                    if f then
+                        subgroup = subgroup or 1
+                        if not groups[subgroup] then
+                            groups[subgroup] = {}
+                            groupOrder[#groupOrder + 1] = subgroup
+                        end
+                        table.insert(groups[subgroup], f)
                     end
-                    if petCount >= MAX_GRID_COLS then
-                        y = y + petH + GAP
-                        petX = 0
-                        petCount = 0
-                    end
-                    pf:SetSize(fw, petH)
-                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", petX, -y)
-                    pf:Show()
-                    petX = petX + fw + GAP
-                    petCount = petCount + 1
                 end
             end
-            if petRowStarted then y = y + petH end
+            table.sort(groupOrder)
+        else
+            groups[1] = {}
+            groupOrder[1] = 1
+            if allFrames["player"] then table.insert(groups[1], allFrames["player"]) end
+            for i = 1, 4 do
+                local f = allFrames["party" .. i]
+                if f and UnitExists("party" .. i) then
+                    table.insert(groups[1], f)
+                end
+            end
         end
 
-        local cols = math.min(#all > 0 and #all or 1, MAX_GRID_COLS)
-        container:SetSize(cols * (fw + GAP) - GAP, y + fh)
+        local maxLen = 1
+        for _, g in ipairs(groupOrder) do
+            if #groups[g] > maxLen then maxLen = #groups[g] end
+        end
+
+        local line = 0  -- row index (mode 3) or column index (mode 4)
+        for _, g in ipairs(groupOrder) do
+            local pos = 0
+            for _, f in ipairs(groups[g]) do
+                local gx, gy
+                if vertical then
+                    gx = line * (fw + GAP)
+                    gy = pos * (fh + GAP)
+                else
+                    gx = pos * (fw + GAP)
+                    gy = line * (fh + GAP)
+                end
+                f:SetPoint("TOPLEFT", container, "TOPLEFT", gx, -gy)
+                f:Show()
+                pos = pos + 1
+            end
+            line = line + 1
+        end
+
+        -- Pets in their own row/column after the groups
+        if showPets then
+            local pets = CollectPets()
+            if #pets > 0 then
+                local pos = 0
+                for _, pf in ipairs(pets) do
+                    pf:SetSize(fw, petH)
+                    local gx, gy
+                    if vertical then
+                        gx = line * (fw + GAP)
+                        gy = pos * (petH + GAP)
+                    else
+                        gx = pos * (fw + GAP)
+                        gy = line * (fh + GAP)
+                    end
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", gx, -gy)
+                    pf:Show()
+                    pos = pos + 1
+                end
+                line = line + 1
+            end
+        end
+
+        local lines = math.max(line, 1)
+        if vertical then
+            container:SetSize(lines * (fw + GAP) - GAP, maxLen * (fh + GAP) - GAP)
+        else
+            container:SetSize(maxLen * (fw + GAP) - GAP, lines * (fh + GAP) - GAP)
+        end
     end
 end
 
@@ -3411,12 +3445,12 @@ LayoutTestFrames = function()
     local mode = db.layoutMode or 1
     local darkMode = (db.colorMode or 1) == 2
     local twoLine = db.twoLineText
-    local showLabels = db.showRoleLabels ~= false and mode ~= 3
+    local showLabels = db.showRoleLabels ~= false and mode <= 2
     local labelH = showLabels and LABEL_HEIGHT or 0
     local roleIconsOn = db.roleIcons ~= false
     local showPets = db.showPets ~= false
     local separatePets = showPets and db.petsSeparate
-    local inlinePets = showPets and not db.petsSeparate and mode ~= 3
+    local inlinePets = showPets and not db.petsSeparate and mode <= 2
     local hotSize = db.iconSize or 10
 
     -- Style all frames
@@ -3442,7 +3476,7 @@ LayoutTestFrames = function()
         f.deficit:ClearAllPoints()
         if twoLine then
             f.name:SetPoint("TOP", 0, -3)
-            f.deficit:SetPoint("BOTTOM", 0, 3)
+            f.deficit:SetPoint("CENTER", 0, -4)
         else
             f.name:SetPoint("LEFT", showRole and 15 or 4, 0)
             f.deficit:SetPoint("RIGHT", -4, 0)
@@ -3618,39 +3652,56 @@ LayoutTestFrames = function()
         container:SetSize(maxCols * (fw + GAP) - GAP, math.max(y - GAP, fh))
 
     else
-        -- Compact grid (pets always on their own row at the bottom)
-        local MAX_GRID_COLS = 5
-        local x, y = 0, 0
-        local count = 0
-        for _, roleKey in ipairs(ROLE_ORDER) do
-            for _, f in ipairs(roleGroups[roleKey]) do
-                if count >= MAX_GRID_COLS then
-                    y = y + fh + GAP
-                    x = 0
-                    count = 0
-                end
-                f:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
-                f:Show()
-                x = x + fw + GAP
-                count = count + 1
+        -- Grid: 3 fake subgroups of 5, as rows (mode 3) or columns (mode 4)
+        local vertical = (mode == 4)
+        local PER_GROUP = 5
+        local line = 0
+        local pos = 0
+        for i, f in ipairs(testFrames) do
+            if pos >= PER_GROUP then
+                line = line + 1
+                pos = 0
             end
+            local gx, gy
+            if vertical then
+                gx = line * (fw + GAP)
+                gy = pos * (fh + GAP)
+            else
+                gx = pos * (fw + GAP)
+                gy = line * (fh + GAP)
+            end
+            f:SetPoint("TOPLEFT", container, "TOPLEFT", gx, -gy)
+            f:Show()
+            pos = pos + 1
         end
+        line = line + 1
 
         if showPets then
             local pets = CollectTestPets()
             if #pets > 0 then
-                y = y + fh + GAP
-                local px = 0
+                local ppos = 0
                 for _, pf in ipairs(pets) do
-                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", px, -y)
+                    local gx, gy
+                    if vertical then
+                        gx = line * (fw + GAP)
+                        gy = ppos * (petH + GAP)
+                    else
+                        gx = ppos * (fw + GAP)
+                        gy = line * (fh + GAP)
+                    end
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", gx, -gy)
                     pf:Show()
-                    px = px + fw + GAP
+                    ppos = ppos + 1
                 end
-                container:SetSize(MAX_GRID_COLS * (fw + GAP) - GAP, y + petH)
-                return
+                line = line + 1
             end
         end
-        container:SetSize(MAX_GRID_COLS * (fw + GAP) - GAP, y + fh)
+
+        if vertical then
+            container:SetSize(line * (fw + GAP) - GAP, PER_GROUP * (fh + GAP) - GAP)
+        else
+            container:SetSize(PER_GROUP * (fw + GAP) - GAP, line * (fh + GAP) - GAP)
+        end
     end
 end
 
@@ -4023,6 +4074,10 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         or event == "RAID_ROSTER_UPDATE" then
         AutoSwitchProfile()
         Layout()
+        -- Blizzard frames re-show themselves on roster changes
+        if db.hideBlizzFrames then
+            SetBlizzardFrames(false)
+        end
     end
 
     -- Ready check
