@@ -272,6 +272,29 @@ local function ApplyFontSize()
     end
 end
 
+-- One-line (name left, health right) or two-line (name top, health bottom) text layout
+local function ApplyTextLayout()
+    local twoLine = db and db.twoLineText
+    for _, f in pairs(allFrames) do
+        if f.name and f.deficit then
+            f.shownRole = nil  -- force role-icon re-anchor on next refresh
+            f.name:ClearAllPoints()
+            f.deficit:ClearAllPoints()
+            if twoLine then
+                f.name:SetPoint("TOP", 0, -3)
+                f.name:SetJustifyH("CENTER")
+                f.deficit:SetPoint("BOTTOM", 0, 3)
+                f.deficit:SetJustifyH("CENTER")
+            else
+                f.name:SetPoint("LEFT", 4, 0)
+                f.name:SetJustifyH("LEFT")
+                f.deficit:SetPoint("RIGHT", -4, 0)
+                f.deficit:SetJustifyH("RIGHT")
+            end
+        end
+    end
+end
+
 -- Resize HoT icons and buff indicators on all frames
 local function ApplyIconSize()
     local hotSize = db and db.iconSize or 10
@@ -426,7 +449,9 @@ local function GetTreeNames()
 end
 
 -- Show/hide Blizzard raid frames
+local partyFramesHooked = false
 local function SetBlizzardFrames(show)
+    if InCombatLockdown() then return end
     if CompactRaidFrameContainer then
         if show then CompactRaidFrameContainer:Show() else CompactRaidFrameContainer:Hide() end
     end
@@ -435,6 +460,28 @@ local function SetBlizzardFrames(show)
     end
     if CompactPartyFrame then
         if show then CompactPartyFrame:Show() else CompactPartyFrame:Hide() end
+    end
+    -- Classic party frames (they re-show themselves on roster events, so hook once)
+    if not partyFramesHooked then
+        partyFramesHooked = true
+        for i = 1, 4 do
+            local pf = _G["PartyMemberFrame" .. i]
+            if pf then
+                pf:HookScript("OnShow", function(self)
+                    if db and db.hideBlizzFrames and not InCombatLockdown() then self:Hide() end
+                end)
+            end
+        end
+    end
+    for i = 1, 4 do
+        local pf = _G["PartyMemberFrame" .. i]
+        if pf then
+            if show then
+                if UnitExists("party" .. i) then pf:Show() end
+            else
+                pf:Hide()
+            end
+        end
     end
 end
 
@@ -540,6 +587,11 @@ end)
 
 local function SetHealthSmooth(f, value)
     f.hpTarget = value
+    if db and db.smoothBars == false then
+        f.hp:SetValue(value)
+        animFrames[f] = nil
+        return
+    end
     local cur = f.hp:GetValue()
     local _, maxV = f.hp:GetMinMaxValues()
     if math.abs(value - cur) <= (maxV * 0.005 + 1) then
@@ -575,20 +627,24 @@ local function Refresh(f)
     local role = (db.roleIcons ~= false) and GetUnitRole(unit) or "NONE"
     if role ~= f.shownRole then
         f.shownRole = role
-        if role == "TANK" then
-            f.roleIcon:SetTexCoord(0, 19/64, 22/64, 41/64)
+        local twoLine = db.twoLineText
+        if role == "TANK" or role == "HEALER" then
+            if role == "TANK" then
+                f.roleIcon:SetTexCoord(0, 19/64, 22/64, 41/64)
+            else
+                f.roleIcon:SetTexCoord(20/64, 39/64, 1/64, 20/64)
+            end
             f.roleIcon:Show()
-            f.name:ClearAllPoints()
-            f.name:SetPoint("LEFT", 15, 0)
-        elseif role == "HEALER" then
-            f.roleIcon:SetTexCoord(20/64, 39/64, 1/64, 20/64)
-            f.roleIcon:Show()
-            f.name:ClearAllPoints()
-            f.name:SetPoint("LEFT", 15, 0)
+            if not twoLine then
+                f.name:ClearAllPoints()
+                f.name:SetPoint("LEFT", 15, 0)
+            end
         else
             f.roleIcon:Hide()
-            f.name:ClearAllPoints()
-            f.name:SetPoint("LEFT", 4, 0)
+            if not twoLine then
+                f.name:ClearAllPoints()
+                f.name:SetPoint("LEFT", 4, 0)
+            end
         end
     end
 
@@ -667,22 +723,20 @@ local function Refresh(f)
         else
             f.hp:SetStatusBarColor(cr, cg, cb)
         end
-        if db.hpPercent then
+        local hpMode = db.hpTextMode or 1
+        local diff = hp - hpMax
+        if diff < 0 then
             local pct = hpMax > 0 and math.floor(hp / hpMax * 100 + 0.5) or 0
-            if pct < 100 then
+            if hpMode == 2 then
                 f.deficit:SetText(pct .. "%")
-                f.deficit:SetTextColor(1, 1, 1)
+            elseif hpMode == 3 then
+                f.deficit:SetText(diff .. "  " .. pct .. "%")
             else
-                f.deficit:SetText("")
-            end
-        else
-            local diff = hp - hpMax
-            if diff < 0 then
                 f.deficit:SetText(diff)
-                f.deficit:SetTextColor(1, 1, 1)
-            else
-                f.deficit:SetText("")
             end
+            f.deficit:SetTextColor(1, 1, 1)
+        else
+            f.deficit:SetText("")
         end
         f.statusText:Hide()
         f.deadIcon:Hide()
@@ -690,7 +744,7 @@ local function Refresh(f)
 
     -- Range check
     local baseAlpha = db.frameAlpha or 1
-    if rangeSpellName and IsSpellInRange(rangeSpellName, unit) == 0 then
+    if db.rangeFade ~= false and rangeSpellName and IsSpellInRange(rangeSpellName, unit) == 0 then
         f:SetAlpha(OOR_ALPHA * baseAlpha)
     else
         f:SetAlpha(baseAlpha)
@@ -750,7 +804,7 @@ local function Refresh(f)
     end
 
     -- Mana bar
-    if not isDead and not isOffline then
+    if db.showMana ~= false and not isDead and not isOffline then
         local pType = UnitPowerType(unit)
         local power = UnitPower(unit)
         local powerMax = UnitPowerMax(unit)
@@ -776,7 +830,7 @@ local function Refresh(f)
 
     -- Aggro indicator
     local showAggro = false
-    if not isDead and not isOffline and UnitThreatSituation then
+    if db.showAggro ~= false and not isDead and not isOffline and UnitThreatSituation then
         local status = UnitThreatSituation(unit)
         if status and status >= 2 then
             showAggro = true
@@ -789,7 +843,7 @@ local function Refresh(f)
     end
 
     -- Out-of-combat indicator
-    if not isDead and not isOffline and not UnitAffectingCombat(unit) and (IsInRaid() or IsInGroup()) then
+    if db.showOOC ~= false and not isDead and not isOffline and not UnitAffectingCombat(unit) and (IsInRaid() or IsInGroup()) then
         f.oocIcon:Show()
     else
         f.oocIcon:Hide()
@@ -816,8 +870,8 @@ local function Refresh(f)
         for i = 1, 40 do
             local bName, bIcon, bCount, _, bDur, bExp = UnitBuff(unit, i)
             if not bName then break end
-            scratchBuffs[bName] = true
-            if bDur and bDur > 0 and bExp and KnownSpell(bName) then
+            scratchBuffs[bName] = (bExp and bExp > 0) and bExp or true
+            if db.showHots ~= false and bDur and bDur > 0 and bExp and KnownSpell(bName) then
                 hotIdx = hotIdx + 1
                 if hotIdx <= 6 then
                     local hot = f.hots[hotIdx]
@@ -842,17 +896,35 @@ local function Refresh(f)
         f.hots[h]:Hide()
     end
 
-    -- Buff indicators (only for buffs the player can cast)
+    -- Buff indicators: gray = missing, orange = expires in under 2 minutes
+    local now = GetTime()
     for slot = 1, 4 do
         local ind = f.buffInd[slot]
-        if not canCastBuff[slot] or isDead or isOffline then
+        local trackable = canCastBuff[slot] or (db.trackAllBuffs and db.buffs[slot] and db.buffs[slot] ~= "")
+        if not trackable or isDead or isOffline then
             ind:Hide()
         else
-            local hasAny = false
+            local bestExp = nil  -- true = permanent buff found, number = latest expiration
             for name in pairs(ParseBuffStr(db.buffs[slot])) do
-                if scratchBuffs[name] then hasAny = true break end
+                local v = scratchBuffs[name]
+                if v == true then
+                    bestExp = true
+                    break
+                elseif v and (bestExp == nil or (bestExp ~= true and v > bestExp)) then
+                    bestExp = v
+                end
             end
-            if hasAny then ind:Hide() else ind:Show() end
+            if bestExp == nil then
+                ind:SetVertexColor(0.6, 0.6, 0.6)
+                ind:SetAlpha(0.75)
+                ind:Show()
+            elseif bestExp ~= true and db.buffExpireWarn ~= false and (bestExp - now) < 120 then
+                ind:SetVertexColor(1, 0.65, 0.1)
+                ind:SetAlpha(1)
+                ind:Show()
+            else
+                ind:Hide()
+            end
         end
     end
 
@@ -884,16 +956,21 @@ local function ApplyBindings()
     end
 
     -- Cache the spell used for range checks (unmodified left click, or first bound spell)
+    local function IsPlainSpell(sp)
+        if not sp or sp == "" then return false end
+        local lower = sp:lower()
+        return lower ~= "target" and lower ~= "menu" and sp:sub(1, 1) ~= "/"
+    end
     rangeSpellName = nil
     for _, b in ipairs(db.bindings or {}) do
-        if b.spell and b.spell ~= "" and b.mod == "" and b.btn == 1 then
+        if IsPlainSpell(b.spell) and b.mod == "" and b.btn == 1 then
             rangeSpellName = b.spell
             break
         end
     end
     if not rangeSpellName then
         for _, b in ipairs(db.bindings or {}) do
-            if b.spell and b.spell ~= "" then rangeSpellName = b.spell break end
+            if IsPlainSpell(b.spell) then rangeSpellName = b.spell break end
         end
     end
 
@@ -912,11 +989,22 @@ local function ApplyBindings()
 
         -- Apply the configured click bindings.
         -- On duplicates the FIRST binding wins - later rows never overwrite an earlier spell.
+        -- Special values: "target" = target the unit, "menu" = unit menu,
+        -- text starting with "/" = macro (@unit is replaced with the clicked unit).
         for _, b in ipairs(db.bindings or {}) do
             if b.spell and b.spell ~= "" and b.btn then
                 local prefix = b.mod == "" and "" or (b.mod .. "-")
                 if not f:GetAttribute(prefix .. "type" .. b.btn) then
-                    if db.clickTarget then
+                    local lower = b.spell:lower()
+                    if lower == "target" then
+                        f:SetAttribute(prefix .. "type" .. b.btn, "target")
+                    elseif lower == "menu" then
+                        f:SetAttribute(prefix .. "type" .. b.btn, "togglemenu")
+                    elseif b.spell:sub(1, 1) == "/" then
+                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
+                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
+                            (b.spell:gsub("@unit", "@" .. u)))
+                    elseif db.clickTarget then
                         f:SetAttribute(prefix .. "type" .. b.btn, "macro")
                         f:SetAttribute(prefix .. "macrotext" .. b.btn,
                             "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
@@ -951,6 +1039,67 @@ local function ApplyBindings()
         SetScrollBinding(f.scrollUp, "shift-type", "shift-spell", "SHIFT_SCROLL_UP")
         SetScrollBinding(f.scrollDown, "type", "spell", "SCROLL_DOWN")
         SetScrollBinding(f.scrollDown, "shift-type", "shift-spell", "SHIFT_SCROLL_DOWN")
+    end
+end
+
+----------------------------------------------
+-- Profile switching (usable outside the config panel)
+----------------------------------------------
+local function ApplyProfileData(name)
+    if not db or name == db.activeProfile then return false end
+    local prof = name ~= "Default" and db.profiles and db.profiles[name] or nil
+    if name ~= "Default" and not prof then return false end
+
+    -- Save current setup into the active profile first
+    local cur = db.activeProfile or "Default"
+    if cur ~= "Default" then
+        db.profiles[cur] = { spells = {}, buffs = {}, bindings = {} }
+        for k, v in pairs(db.spells) do db.profiles[cur].spells[k] = v end
+        for i = 1, 4 do db.profiles[cur].buffs[i] = db.buffs[i] or "" end
+        for _, b in ipairs(db.bindings or {}) do
+            table.insert(db.profiles[cur].bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
+        end
+    end
+
+    if prof then
+        for k, v in pairs(prof.spells) do db.spells[k] = v end
+        for i = 1, 4 do db.buffs[i] = prof.buffs[i] or "" end
+        if prof.bindings then
+            db.bindings = {}
+            for _, b in ipairs(prof.bindings) do
+                table.insert(db.bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
+            end
+        else
+            db.bindings = BindingsFromLegacySpells(prof.spells)
+        end
+    end
+    db.activeProfile = name
+    ApplyBindings()
+    UpdateCanCastBuffs()
+    Layout()
+    return true
+end
+
+-- Auto-switch profile based on group type (arena > raid > party)
+local function AutoSwitchProfile()
+    if not db or InCombatLockdown() then return end
+    local target
+    local _, instType = GetInstanceInfo()
+    if instType == "arena" then
+        target = db.autoProfileArena
+    elseif IsInRaid() then
+        target = db.autoProfileRaid
+    elseif IsInGroup() then
+        target = db.autoProfileParty
+    end
+    if target and target ~= "" and target ~= "None" and target ~= db.activeProfile then
+        if ApplyProfileData(target) then
+            print("|cff00ff00SimpleHeal:|r Auto-switched to profile: " .. target)
+            if configPanel then
+                UIDropDownMenu_SetText(configPanel.profDrop, target)
+                if configPanel.RefreshBindingRows then configPanel.RefreshBindingRows() end
+            end
+        end
     end
 end
 
@@ -1361,74 +1510,81 @@ local function CreateConfigPanel()
     -- Tab system (Blizzard-style tabs along the bottom edge)
     ------------------------------------------------
     local tabContentTop = -32
-    local tab1Frame = CreateFrame("Frame", nil, p)
-    tab1Frame:SetPoint("TOPLEFT", 0, tabContentTop)
-    tab1Frame:SetPoint("BOTTOMRIGHT", 0, 42)
-    local tab2Frame = CreateFrame("Frame", nil, p)
-    tab2Frame:SetPoint("TOPLEFT", 0, tabContentTop)
-    tab2Frame:SetPoint("BOTTOMRIGHT", 0, 42)
-    tab2Frame:Hide()
+    local tabFrames = {}
+    for t = 1, 3 do
+        local tf = CreateFrame("Frame", nil, p)
+        tf:SetPoint("TOPLEFT", 0, tabContentTop)
+        tf:SetPoint("BOTTOMRIGHT", 0, 42)
+        if t > 1 then tf:Hide() end
+        tabFrames[t] = tf
+    end
+    local tab1Frame, tab2Frame, tab3Frame = tabFrames[1], tabFrames[2], tabFrames[3]
 
-    local tabBtn1, tabBtn2
+    local TAB_NAMES = { "Spells", "Display", "Advanced" }
+    local tabButtons = {}
     local usingBlizzTabs = pcall(function()
-        tabBtn1 = CreateFrame("Button", "SimpleHealConfigTab1", p, "CharacterFrameTabButtonTemplate")
-        tabBtn2 = CreateFrame("Button", "SimpleHealConfigTab2", p, "CharacterFrameTabButtonTemplate")
+        for t = 1, 3 do
+            tabButtons[t] = CreateFrame("Button", "SimpleHealConfigTab" .. t, p, "CharacterFrameTabButtonTemplate")
+        end
     end)
 
     local SetActiveTab
     if usingBlizzTabs then
-        tabBtn1:SetID(1)
-        tabBtn1:SetText("Spells & Profiles")
-        tabBtn1:SetPoint("TOPLEFT", p, "BOTTOMLEFT", 12, 4)
-        tabBtn2:SetID(2)
-        tabBtn2:SetText("Settings")
-        tabBtn2:SetPoint("LEFT", tabBtn1, "RIGHT", -14, 0)
-        PanelTemplates_SetNumTabs(p, 2)
+        for t = 1, 3 do
+            tabButtons[t]:SetID(t)
+            tabButtons[t]:SetText(TAB_NAMES[t])
+            if t == 1 then
+                tabButtons[t]:SetPoint("TOPLEFT", p, "BOTTOMLEFT", 12, 4)
+            else
+                tabButtons[t]:SetPoint("LEFT", tabButtons[t - 1], "RIGHT", -14, 0)
+            end
+        end
+        PanelTemplates_SetNumTabs(p, 3)
 
         SetActiveTab = function(n)
             PanelTemplates_SetTab(p, n)
-            if n == 1 then tab1Frame:Show(); tab2Frame:Hide()
-            else tab1Frame:Hide(); tab2Frame:Show() end
+            for t = 1, 3 do
+                if t == n then tabFrames[t]:Show() else tabFrames[t]:Hide() end
+            end
         end
     else
         -- Fallback: simple flat tabs at the top
-        local function MakeTab(text, x)
+        local tabW = math.floor((panelW - padX * 2) / 3) - 4
+        for t = 1, 3 do
             local btn = CreateFrame("Button", nil, p)
-            btn:SetSize(panelW / 2 - 8, 22)
-            btn:SetPoint("TOPLEFT", x, -28)
+            btn:SetSize(tabW, 22)
+            btn:SetPoint("TOPLEFT", padX + (t - 1) * (tabW + 4), -28)
             local btnBg = btn:CreateTexture(nil, "BACKGROUND")
             btnBg:SetAllPoints()
             btn.bg = btnBg
             local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
             btnText:SetPoint("CENTER")
-            btnText:SetText(text)
+            btnText:SetText(TAB_NAMES[t])
             btn.label = btnText
-            return btn
+            tabButtons[t] = btn
         end
-        tabBtn1 = MakeTab("Spells & Profiles", padX)
-        tabBtn2 = MakeTab("Settings", panelW / 2 + 2)
-        tab1Frame:SetPoint("TOPLEFT", 0, -56)
-        tab2Frame:SetPoint("TOPLEFT", 0, -56)
+        for t = 1, 3 do
+            tabFrames[t]:SetPoint("TOPLEFT", 0, -56)
+        end
 
         SetActiveTab = function(n)
-            if n == 1 then
-                tab1Frame:Show(); tab2Frame:Hide()
-                tabBtn1.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
-                tabBtn2.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-                tabBtn1.label:SetTextColor(1, 1, 1)
-                tabBtn2.label:SetTextColor(0.6, 0.6, 0.6)
-            else
-                tab1Frame:Hide(); tab2Frame:Show()
-                tabBtn1.bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
-                tabBtn2.bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
-                tabBtn1.label:SetTextColor(0.6, 0.6, 0.6)
-                tabBtn2.label:SetTextColor(1, 1, 1)
+            for t = 1, 3 do
+                if t == n then
+                    tabFrames[t]:Show()
+                    tabButtons[t].bg:SetColorTexture(0.2, 0.4, 0.2, 0.9)
+                    tabButtons[t].label:SetTextColor(1, 1, 1)
+                else
+                    tabFrames[t]:Hide()
+                    tabButtons[t].bg:SetColorTexture(0.15, 0.15, 0.15, 0.9)
+                    tabButtons[t].label:SetTextColor(0.6, 0.6, 0.6)
+                end
             end
         end
     end
 
-    tabBtn1:SetScript("OnClick", function() SetActiveTab(1) end)
-    tabBtn2:SetScript("OnClick", function() SetActiveTab(2) end)
+    for t = 1, 3 do
+        tabButtons[t]:SetScript("OnClick", function() SetActiveTab(t) end)
+    end
     SetActiveTab(1)
 
     local function AddTooltip(widget, title, text)
@@ -1638,14 +1794,20 @@ local function CreateConfigPanel()
 
     local spellHint = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     spellHint:SetPoint("LEFT", spellHeader, "RIGHT", 6, 0)
-    spellHint:SetText("(green = known, red = unknown)")
+    spellHint:SetText("(spell, macro \"/...\", target, menu)")
 
-    -- Live validation: green if in spellbook, red if not
+    -- Live validation: green if in spellbook, red if not.
+    -- Macros ("/..."), "target" and "menu" are shown in blue.
     local function AttachValidation(eb)
         eb:HookScript("OnTextChanged", function(self)
             local text = self:GetText()
             if not text or text == "" then
                 self:SetTextColor(1, 1, 1)
+                return
+            end
+            local lower = text:lower()
+            if lower == "target" or lower == "menu" or text:sub(1, 1) == "/" then
+                self:SetTextColor(0.5, 0.8, 1)
                 return
             end
             local base = text:match("^(.-)%s*%(") or text
@@ -1902,18 +2064,22 @@ local function CreateConfigPanel()
     end
 
     ------------------------------------------------
-    -- TAB 2: Settings
+    -- TAB 2: Display
     ------------------------------------------------
     local t2 = tab2Frame
+    ------------------------------------------------
+    -- TAB 3: Advanced
+    ------------------------------------------------
+    local t3 = tab3Frame
 
-    -- Spec filter dropdown
-    local specLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    -- Spec filter dropdown (Advanced)
+    local specLabel = t3:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     specLabel:SetPoint("TOPLEFT", padX, -8)
     specLabel:SetText("Show only for:")
 
     p.selectedSpecTree = 0
 
-    local specDrop = CreateFrame("Frame", "SimpleHealSpecDrop", t2, "UIDropDownMenuTemplate")
+    local specDrop = CreateFrame("Frame", "SimpleHealSpecDrop", t3, "UIDropDownMenuTemplate")
     specDrop:SetPoint("LEFT", specLabel, "RIGHT", -8, -2)
     UIDropDownMenu_SetWidth(specDrop, 140)
     UIDropDownMenu_SetText(specDrop, "Always Show")
@@ -1943,7 +2109,7 @@ local function CreateConfigPanel()
     end)
 
     -- Sliders
-    local sliderTop = -40
+    local sliderTop = -10
 
     local function MakeSlider(name, minV, maxV, step, x, y, width)
         local s = CreateFrame("Slider", "SimpleHeal" .. name .. "Slider", t2, "OptionsSliderTemplate")
@@ -2001,6 +2167,10 @@ local function CreateConfigPanel()
         val = math.floor(val)
         if self.Text then self.Text:SetText("Opacity: " .. val .. "%") end
         db.frameAlpha = val / 100
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then f:SetAlpha(db.frameAlpha) end
+        end
+        if testModeActive and not InCombatLockdown() then Layout() end
     end)
     p.aSlider = aSlider
 
@@ -2024,6 +2194,7 @@ local function CreateConfigPanel()
         if self.Text then self.Text:SetText("Icon size: " .. val) end
         db.iconSize = val
         ApplyIconSize()
+        if testModeActive and not InCombatLockdown() then Layout() end
     end)
     p.iSlider = iSlider
     AddTooltip(iSlider, "Icon size",
@@ -2110,11 +2281,41 @@ local function CreateConfigPanel()
         end
     end)
 
-    -- Checkboxes
-    local cbTop = sliderTop - 282
+    -- Health text dropdown
+    local HEALTH_MODES = { "Missing health (-1234)", "Percent (87%)", "Both" }
+    local healthLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    healthLabel:SetPoint("TOPLEFT", padX, sliderTop - 276)
+    healthLabel:SetText("Health text")
 
-    local function MakeCheckbox(label, x, y)
-        local cb = CreateFrame("CheckButton", nil, t2, "UICheckButtonTemplate")
+    local healthDrop = CreateFrame("Frame", "SimpleHealHealthDrop", t2, "UIDropDownMenuTemplate")
+    healthDrop:SetPoint("LEFT", healthLabel, "RIGHT", -6, -2)
+    UIDropDownMenu_SetWidth(healthDrop, 150)
+    UIDropDownMenu_SetText(healthDrop, HEALTH_MODES[db.hpTextMode or 1])
+    p.healthDrop = healthDrop
+    p.HEALTH_MODES = HEALTH_MODES
+    UIDropDownMenu_Initialize(healthDrop, function(self, level)
+        for i, name in ipairs(HEALTH_MODES) do
+            local info = UIDropDownMenu_CreateInfo()
+            info.text = name
+            info.func = function()
+                db.hpTextMode = i
+                UIDropDownMenu_SetText(healthDrop, name)
+                CloseDropDownMenus()
+                for _, f in pairs(allFrames) do
+                    if f:IsShown() then Refresh(f) end
+                end
+                if not InCombatLockdown() then Layout() end
+            end
+            info.checked = (i == (db.hpTextMode or 1))
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    -- Display checkboxes
+    local cbTop = sliderTop - 312
+
+    local function MakeCheckbox(parent, label, x, y)
+        local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
         cb:SetSize(22, 22)
         cb:SetPoint("TOPLEFT", x, y)
         local text = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -2129,7 +2330,7 @@ local function CreateConfigPanel()
     optHeader:SetText("Options")
     optHeader:SetTextColor(1, 0.82, 0)
 
-    local cbLock = MakeCheckbox("Lock position", padX, cbTop - 4)
+    local cbLock = MakeCheckbox(t2, "Lock position", padX, cbTop - 4)
     cbLock:SetChecked(db.locked)
     cbLock:SetScript("OnClick", function(self)
         db.locked = self:GetChecked() and true or false
@@ -2138,34 +2339,20 @@ local function CreateConfigPanel()
     p.cbLock = cbLock
     AddTooltip(cbLock, "Lock position", "Locks the frames so they cannot be moved by dragging.")
 
-    local cbTarget = MakeCheckbox("Click-to-target + cast", padX, cbTop - 26)
-    cbTarget:SetChecked(db.clickTarget)
-    cbTarget:SetScript("OnClick", function(self)
-        db.clickTarget = self:GetChecked() and true or false
-        if not InCombatLockdown() then ApplyBindings() end
+    local cbTwoLine = MakeCheckbox(t2, "Two-line text", padX, cbTop - 26)
+    cbTwoLine:SetChecked(db.twoLineText or false)
+    cbTwoLine:SetScript("OnClick", function(self)
+        db.twoLineText = self:GetChecked() and true or false
+        ApplyTextLayout()
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then Refresh(f) end
+        end
+        if not InCombatLockdown() then Layout() end
     end)
-    p.cbTarget = cbTarget
-    AddTooltip(cbTarget, "Click-to-target + cast", "Clicking a frame also targets the player before casting.")
+    p.cbTwoLine = cbTwoLine
+    AddTooltip(cbTwoLine, "Two-line text", "Name on the first line and missing health on the second - good for square frames.")
 
-    local cbHideBlizz = MakeCheckbox("Hide Blizzard raid frames", padX, cbTop - 48)
-    cbHideBlizz:SetChecked(db.hideBlizzFrames or false)
-    cbHideBlizz:SetScript("OnClick", function(self)
-        db.hideBlizzFrames = self:GetChecked() and true or false
-        if not InCombatLockdown() then SetBlizzardFrames(not db.hideBlizzFrames) end
-    end)
-    p.cbHideBlizz = cbHideBlizz
-    AddTooltip(cbHideBlizz, "Hide Blizzard raid frames", "Hides the built-in raid/party frames so only SimpleHeal is shown.")
-
-    local cbGroupOnly = MakeCheckbox("Only show in group/raid", padX, cbTop - 70)
-    cbGroupOnly:SetChecked(db.groupOnly or false)
-    cbGroupOnly:SetScript("OnClick", function(self)
-        db.groupOnly = self:GetChecked() and true or false
-        UpdateSpecVisibility()
-    end)
-    p.cbGroupOnly = cbGroupOnly
-    AddTooltip(cbGroupOnly, "Only show in group/raid", "Hides SimpleHeal when you are solo.")
-
-    local cbShowPets = MakeCheckbox("Show pets", padX + 170, cbTop - 4)
+    local cbShowPets = MakeCheckbox(t2, "Show pets", padX + 170, cbTop - 4)
     cbShowPets:SetChecked(db.showPets ~= false)
     cbShowPets:SetScript("OnClick", function(self)
         db.showPets = self:GetChecked() and true or false
@@ -2174,18 +2361,7 @@ local function CreateConfigPanel()
     p.cbShowPets = cbShowPets
     AddTooltip(cbShowPets, "Show pets", "Shows hunter/warlock pets as small frames below their owner.")
 
-    local cbPercent = MakeCheckbox("Health as %", padX + 170, cbTop - 26)
-    cbPercent:SetChecked(db.hpPercent or false)
-    cbPercent:SetScript("OnClick", function(self)
-        db.hpPercent = self:GetChecked() and true or false
-        for _, f in pairs(allFrames) do
-            if f:IsShown() then Refresh(f) end
-        end
-    end)
-    p.cbPercent = cbPercent
-    AddTooltip(cbPercent, "Health as %", "Shows health as a percentage instead of the missing-health number.")
-
-    local cbTitle = MakeCheckbox("Show title", padX + 170, cbTop - 48)
+    local cbTitle = MakeCheckbox(t2, "Show title", padX + 170, cbTop - 26)
     cbTitle:SetChecked(db.showTitle ~= false)
     cbTitle:SetScript("OnClick", function(self)
         db.showTitle = self:GetChecked() and true or false
@@ -2196,26 +2372,216 @@ local function CreateConfigPanel()
     p.cbTitle = cbTitle
     AddTooltip(cbTitle, "Show title", "Shows the SimpleHeal label on the drag handle above the frames.")
 
-    local cbRoleIcons = MakeCheckbox("Role icons", padX + 170, cbTop - 70)
+    local cbRoleIcons = MakeCheckbox(t2, "Role icons", padX + 170, cbTop - 48)
     cbRoleIcons:SetChecked(db.roleIcons ~= false)
     cbRoleIcons:SetScript("OnClick", function(self)
         db.roleIcons = self:GetChecked() and true or false
         for _, f in pairs(allFrames) do
             if f:IsShown() then Refresh(f) end
         end
+        if not InCombatLockdown() then Layout() end
     end)
     p.cbRoleIcons = cbRoleIcons
     AddTooltip(cbRoleIcons, "Role icons", "Shows a small tank/healer icon next to the name on each frame.")
 
-    -- Import/Export
-    local ieHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    ieHeader:SetPoint("BOTTOMLEFT", t2, "BOTTOMLEFT", padX, 30)
+    local function RefreshAll()
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then Refresh(f) end
+        end
+    end
+
+    local cbMana = MakeCheckbox(t2, "Mana bar", padX, cbTop - 48)
+    cbMana:SetChecked(db.showMana ~= false)
+    cbMana:SetScript("OnClick", function(self)
+        db.showMana = self:GetChecked() and true or false
+        RefreshAll()
+    end)
+    p.cbMana = cbMana
+    AddTooltip(cbMana, "Mana bar", "Shows the thin mana/rage/energy bar at the bottom of each frame.")
+
+    local cbHots = MakeCheckbox(t2, "HoT icons", padX, cbTop - 70)
+    cbHots:SetChecked(db.showHots ~= false)
+    cbHots:SetScript("OnClick", function(self)
+        db.showHots = self:GetChecked() and true or false
+        RefreshAll()
+        if testModeActive and not InCombatLockdown() then Layout() end
+    end)
+    p.cbHots = cbHots
+    AddTooltip(cbHots, "HoT icons", "Shows your own HoTs/buffs with timers in the bottom-left corner of each frame.")
+
+    local cbSmooth = MakeCheckbox(t2, "Smooth bars", padX, cbTop - 92)
+    cbSmooth:SetChecked(db.smoothBars ~= false)
+    cbSmooth:SetScript("OnClick", function(self)
+        db.smoothBars = self:GetChecked() and true or false
+    end)
+    p.cbSmooth = cbSmooth
+    AddTooltip(cbSmooth, "Smooth bars", "Animates health bar changes instead of jumping instantly.")
+
+    local cbOOC = MakeCheckbox(t2, "OOC indicator", padX + 170, cbTop - 70)
+    cbOOC:SetChecked(db.showOOC ~= false)
+    cbOOC:SetScript("OnClick", function(self)
+        db.showOOC = self:GetChecked() and true or false
+        RefreshAll()
+    end)
+    p.cbOOC = cbOOC
+    AddTooltip(cbOOC, "Out-of-combat indicator", "Shows a green dot on players that are out of combat.")
+
+    local cbAggro = MakeCheckbox(t2, "Aggro border", padX + 170, cbTop - 92)
+    cbAggro:SetChecked(db.showAggro ~= false)
+    cbAggro:SetScript("OnClick", function(self)
+        db.showAggro = self:GetChecked() and true or false
+        RefreshAll()
+    end)
+    p.cbAggro = cbAggro
+    AddTooltip(cbAggro, "Aggro border", "Shows a red line at the top of frames when a player has threat.")
+
+    local cbPetsSep = MakeCheckbox(t2, "Pets in own group", padX, cbTop - 114)
+    cbPetsSep:SetChecked(db.petsSeparate or false)
+    cbPetsSep:SetScript("OnClick", function(self)
+        db.petsSeparate = self:GetChecked() and true or false
+        if not InCombatLockdown() then Layout() end
+    end)
+    p.cbPetsSep = cbPetsSep
+    AddTooltip(cbPetsSep, "Pets in own group",
+        "Places all pets in their own column (right of DPS) or row instead of below their owners.")
+
+    local cbRoleLabels = MakeCheckbox(t2, "Role labels", padX + 170, cbTop - 114)
+    cbRoleLabels:SetChecked(db.showRoleLabels ~= false)
+    cbRoleLabels:SetScript("OnClick", function(self)
+        db.showRoleLabels = self:GetChecked() and true or false
+        if not InCombatLockdown() then Layout() end
+    end)
+    p.cbRoleLabels = cbRoleLabels
+    AddTooltip(cbRoleLabels, "Role labels", "Shows the TANKS / HEALERS / DPS headers above each group.")
+
+    ------------------------------------------------
+    -- TAB 3: Advanced - behavior options
+    ------------------------------------------------
+    local advTop = -46
+
+    local advHeader = t3:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    advHeader:SetPoint("TOPLEFT", padX, advTop + 14)
+    advHeader:SetText("Behavior")
+    advHeader:SetTextColor(1, 0.82, 0)
+
+    local cbTarget = MakeCheckbox(t3, "Click-to-target + cast", padX, advTop - 4)
+    cbTarget:SetChecked(db.clickTarget)
+    cbTarget:SetScript("OnClick", function(self)
+        db.clickTarget = self:GetChecked() and true or false
+        if not InCombatLockdown() then ApplyBindings() end
+    end)
+    p.cbTarget = cbTarget
+    AddTooltip(cbTarget, "Click-to-target + cast", "Clicking a frame also targets the player before casting.")
+
+    local cbHideBlizz = MakeCheckbox(t3, "Hide Blizzard raid/party frames", padX, advTop - 26)
+    cbHideBlizz:SetChecked(db.hideBlizzFrames or false)
+    cbHideBlizz:SetScript("OnClick", function(self)
+        db.hideBlizzFrames = self:GetChecked() and true or false
+        if not InCombatLockdown() then SetBlizzardFrames(not db.hideBlizzFrames) end
+    end)
+    p.cbHideBlizz = cbHideBlizz
+    AddTooltip(cbHideBlizz, "Hide Blizzard raid/party frames", "Hides the built-in raid AND party frames so only SimpleHeal is shown.")
+
+    local cbGroupOnly = MakeCheckbox(t3, "Only show in group/raid", padX, advTop - 48)
+    cbGroupOnly:SetChecked(db.groupOnly or false)
+    cbGroupOnly:SetScript("OnClick", function(self)
+        db.groupOnly = self:GetChecked() and true or false
+        UpdateSpecVisibility()
+    end)
+    p.cbGroupOnly = cbGroupOnly
+    AddTooltip(cbGroupOnly, "Only show in group/raid", "Hides SimpleHeal when you are solo.")
+
+    local cbTrackAll = MakeCheckbox(t3, "Track buffs from any class", padX, advTop - 70)
+    cbTrackAll:SetChecked(db.trackAllBuffs or false)
+    cbTrackAll:SetScript("OnClick", function(self)
+        db.trackAllBuffs = self:GetChecked() and true or false
+    end)
+    p.cbTrackAll = cbTrackAll
+    AddTooltip(cbTrackAll, "Track buffs from any class",
+        "Show missing-buff indicators even for buffs you cannot cast yourself (e.g. track Fortitude as a druid).")
+
+    local cbExpireWarn = MakeCheckbox(t3, "Warn when buff is about to expire", padX, advTop - 92)
+    cbExpireWarn:SetChecked(db.buffExpireWarn ~= false)
+    cbExpireWarn:SetScript("OnClick", function(self)
+        db.buffExpireWarn = self:GetChecked() and true or false
+    end)
+    p.cbExpireWarn = cbExpireWarn
+    AddTooltip(cbExpireWarn, "Buff expire warning",
+        "The buff indicator turns orange when a tracked buff has less than 2 minutes left.")
+
+    local cbRangeFade = MakeCheckbox(t3, "Fade out-of-range players", padX, advTop - 114)
+    cbRangeFade:SetChecked(db.rangeFade ~= false)
+    cbRangeFade:SetScript("OnClick", function(self)
+        db.rangeFade = self:GetChecked() and true or false
+        for _, f in pairs(allFrames) do
+            if f:IsShown() then Refresh(f) end
+        end
+    end)
+    p.cbRangeFade = cbRangeFade
+    AddTooltip(cbRangeFade, "Range fade",
+        "Fades frames of players that are out of range of your left-click heal.")
+
+    local cbMinimap = MakeCheckbox(t3, "Minimap button", padX, advTop - 136)
+    cbMinimap:SetChecked(db.showMinimap ~= false)
+    cbMinimap:SetScript("OnClick", function(self)
+        db.showMinimap = self:GetChecked() and true or false
+        local btn = _G.SimpleHealMinimapBtn
+        if btn then
+            if db.showMinimap then btn:Show() else btn:Hide() end
+        end
+    end)
+    p.cbMinimap = cbMinimap
+    AddTooltip(cbMinimap, "Minimap button", "Shows the SimpleHeal button around the minimap.")
+
+    -- Auto-profile per group type
+    local autoHeader = t3:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    autoHeader:SetPoint("TOPLEFT", padX, advTop - 170)
+    autoHeader:SetText("Auto Profile")
+    autoHeader:SetTextColor(1, 0.82, 0)
+
+    local function MakeAutoProfDrop(label, y, dbKey)
+        local lbl = t3:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        lbl:SetPoint("TOPLEFT", padX, y)
+        lbl:SetText(label)
+        local drop = CreateFrame("Frame", "SimpleHealAuto" .. dbKey, t3, "UIDropDownMenuTemplate")
+        drop:SetPoint("LEFT", lbl, "RIGHT", -4, -2)
+        UIDropDownMenu_SetWidth(drop, 110)
+        UIDropDownMenu_SetText(drop, db[dbKey] or "None")
+        UIDropDownMenu_Initialize(drop, function(self, level)
+            local names = { "None", "Default" }
+            for name in pairs(db.profiles or {}) do names[#names + 1] = name end
+            for _, name in ipairs(names) do
+                local info = UIDropDownMenu_CreateInfo()
+                info.text = name
+                info.func = function()
+                    db[dbKey] = name ~= "None" and name or nil
+                    UIDropDownMenu_SetText(drop, name)
+                    CloseDropDownMenus()
+                    AutoSwitchProfile()
+                end
+                info.checked = ((db[dbKey] or "None") == name)
+                UIDropDownMenu_AddButton(info, level)
+            end
+        end)
+        return drop
+    end
+
+    p.autoPartyDrop = MakeAutoProfDrop("In party:", advTop - 192, "autoProfileParty")
+    p.autoRaidDrop  = MakeAutoProfDrop("In raid:",  advTop - 224, "autoProfileRaid")
+    p.autoArenaDrop = MakeAutoProfDrop("In arena:", advTop - 256, "autoProfileArena")
+    AddTooltip(p.autoPartyDrop, "Auto profile", "Automatically switch to this profile when you join a party.")
+    AddTooltip(p.autoRaidDrop, "Auto profile", "Automatically switch to this profile when you join a raid.")
+    AddTooltip(p.autoArenaDrop, "Auto profile", "Automatically switch to this profile when you enter an arena (takes priority over party/raid).")
+
+    -- Import/Export (Advanced)
+    local ieHeader = t3:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    ieHeader:SetPoint("BOTTOMLEFT", t3, "BOTTOMLEFT", padX, 30)
     ieHeader:SetText("Import / Export Spells")
     ieHeader:SetTextColor(1, 0.82, 0)
 
-    local ieBox = CreateFrame("EditBox", nil, t2, "BackdropTemplate")
+    local ieBox = CreateFrame("EditBox", nil, t3, "BackdropTemplate")
     ieBox:SetSize(panelW - padX * 2 - 110, 20)
-    ieBox:SetPoint("BOTTOMLEFT", t2, "BOTTOMLEFT", padX, 8)
+    ieBox:SetPoint("BOTTOMLEFT", t3, "BOTTOMLEFT", padX, 8)
     ieBox:SetFontObject(GameFontHighlightSmall)
     ieBox:SetAutoFocus(false)
     ieBox:SetBackdrop({
@@ -2228,7 +2594,7 @@ local function CreateConfigPanel()
     ieBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     p.ieBox = ieBox
 
-    local exportBtn = CreateFrame("Button", nil, t2, "UIPanelButtonTemplate")
+    local exportBtn = CreateFrame("Button", nil, t3, "UIPanelButtonTemplate")
     exportBtn:SetSize(50, 20)
     exportBtn:SetPoint("LEFT", ieBox, "RIGHT", 4, 0)
     exportBtn:SetText("Export")
@@ -2248,7 +2614,7 @@ local function CreateConfigPanel()
         ieBox:SetFocus()
     end)
 
-    local importBtn = CreateFrame("Button", nil, t2, "UIPanelButtonTemplate")
+    local importBtn = CreateFrame("Button", nil, t3, "UIPanelButtonTemplate")
     importBtn:SetSize(50, 20)
     importBtn:SetPoint("LEFT", exportBtn, "RIGHT", 2, 0)
     importBtn:SetText("Import")
@@ -2378,6 +2744,8 @@ local function CreateConfigPanel()
         local unknown = {}
         local function CheckSpell(sp)
             if sp and sp ~= "" then
+                local lower = sp:lower()
+                if lower == "target" or lower == "menu" or sp:sub(1, 1) == "/" then return end
                 local base = sp:match("^(.-)%s*%(") or sp  -- strip "(Rank X)"
                 if not GetSpellInfo(base) then
                     unknown[#unknown + 1] = sp
@@ -2446,9 +2814,24 @@ local function ShowConfig()
     configPanel.fSlider:SetValue(db.fontSize or 10)
     configPanel.iSlider:SetValue(db.iconSize or 10)
     configPanel.cbShowPets:SetChecked(db.showPets ~= false)
-    configPanel.cbPercent:SetChecked(db.hpPercent or false)
+    UIDropDownMenu_SetText(configPanel.healthDrop, configPanel.HEALTH_MODES[db.hpTextMode or 1])
     configPanel.cbTitle:SetChecked(db.showTitle ~= false)
     configPanel.cbRoleIcons:SetChecked(db.roleIcons ~= false)
+    configPanel.cbTwoLine:SetChecked(db.twoLineText or false)
+    configPanel.cbTrackAll:SetChecked(db.trackAllBuffs or false)
+    configPanel.cbExpireWarn:SetChecked(db.buffExpireWarn ~= false)
+    configPanel.cbMana:SetChecked(db.showMana ~= false)
+    configPanel.cbHots:SetChecked(db.showHots ~= false)
+    configPanel.cbSmooth:SetChecked(db.smoothBars ~= false)
+    configPanel.cbOOC:SetChecked(db.showOOC ~= false)
+    configPanel.cbAggro:SetChecked(db.showAggro ~= false)
+    configPanel.cbRoleLabels:SetChecked(db.showRoleLabels ~= false)
+    configPanel.cbRangeFade:SetChecked(db.rangeFade ~= false)
+    configPanel.cbMinimap:SetChecked(db.showMinimap ~= false)
+    configPanel.cbPetsSep:SetChecked(db.petsSeparate or false)
+    UIDropDownMenu_SetText(configPanel.autoPartyDrop, db.autoProfileParty or "None")
+    UIDropDownMenu_SetText(configPanel.autoRaidDrop, db.autoProfileRaid or "None")
+    UIDropDownMenu_SetText(configPanel.autoArenaDrop, db.autoProfileArena or "None")
     -- Restore checkboxes
     configPanel.cbLock:SetChecked(db.locked)
     configPanel.cbTarget:SetChecked(db.clickTarget)
@@ -2500,6 +2883,7 @@ local function CreateContainer()
         { key = "TANK",    text = "TANKS",   r = 0.5, g = 0.5, b = 1.0 },
         { key = "HEALER",  text = "HEALERS", r = 0.2, g = 1.0, b = 0.2 },
         { key = "DAMAGER", text = "DPS",     r = 1.0, g = 0.3, b = 0.3 },
+        { key = "PETS",    text = "PETS",    r = 0.7, g = 0.7, b = 0.7 },
     }
     for _, info in ipairs(ROLE_LABEL_INFO) do
         local lbl = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2596,37 +2980,58 @@ Layout = function()
         return nil
     end
 
+    local showLabels = db.showRoleLabels ~= false
+    local labelH = showLabels and LABEL_HEIGHT or 0
+    local separatePets = showPets and db.petsSeparate
+
+    -- Collect all pets (used when pets get their own column/row)
+    local function CollectPets()
+        local pets = {}
+        for _, roleKey in ipairs(ROLE_ORDER) do
+            for _, f in ipairs(roleGroups[roleKey]) do
+                local pf = GetPetFrame(f)
+                if pf then pets[#pets + 1] = pf end
+            end
+        end
+        return pets
+    end
+
     if mode == 1 then
         -- Columns: TANK | HEALER | DPS (splits at MAX_PER_COL)
         local col = 0
         local maxY = 0
 
-        local function LayoutColumn(members, label, startCol)
+        local function LayoutColumn(members, label, startCol, height)
             local c = startCol
-            local lbl = container.roleLabels[label]
-            lbl:SetPoint("TOPLEFT", container, "TOPLEFT", c * (fw + GAP), 0)
-            lbl:Show()
+            if showLabels then
+                local lbl = container.roleLabels[label]
+                lbl:SetPoint("TOPLEFT", container, "TOPLEFT", c * (fw + GAP), 0)
+                lbl:Show()
+            end
 
-            local y = LABEL_HEIGHT
+            local y = labelH
             local count = 0
             for _, f in ipairs(members) do
                 if count >= MAX_PER_COL then
                     if y > maxY then maxY = y end
                     c = c + 1
-                    y = LABEL_HEIGHT
+                    y = labelH
                     count = 0
                 end
+                f:SetSize(fw, height or fh)
                 f:SetPoint("TOPLEFT", container, "TOPLEFT", c * (fw + GAP), -y)
                 f:Show()
-                y = y + fh + GAP
+                y = y + (height or fh) + GAP
                 count = count + 1
 
-                local pf = GetPetFrame(f)
-                if pf then
-                    pf:SetSize(fw, petH)
-                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", c * (fw + GAP), -y)
-                    pf:Show()
-                    y = y + petH + GAP
+                if not separatePets then
+                    local pf = GetPetFrame(f)
+                    if pf then
+                        pf:SetSize(fw, petH)
+                        pf:SetPoint("TOPLEFT", container, "TOPLEFT", c * (fw + GAP), -y)
+                        pf:Show()
+                        y = y + petH + GAP
+                    end
                 end
             end
             if y > maxY then maxY = y end
@@ -2637,6 +3042,14 @@ Layout = function()
             local members = roleGroups[roleKey]
             if #members > 0 then
                 col = LayoutColumn(members, roleKey, col)
+            end
+        end
+
+        -- Pets in their own column to the right of DPS
+        if separatePets then
+            local pets = CollectPets()
+            if #pets > 0 then
+                col = LayoutColumn(pets, "PETS", col, petH)
             end
         end
 
@@ -2653,10 +3066,12 @@ Layout = function()
         for _, roleKey in ipairs(ROLE_ORDER) do
             local members = roleGroups[roleKey]
             if #members > 0 then
-                local lbl = container.roleLabels[roleKey]
-                lbl:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -y)
-                lbl:Show()
-                y = y + LABEL_HEIGHT
+                if showLabels then
+                    local lbl = container.roleLabels[roleKey]
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -y)
+                    lbl:Show()
+                end
+                y = y + labelH
 
                 local x = 0
                 local count = 0
@@ -2671,12 +3086,14 @@ Layout = function()
                     f:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
                     f:Show()
 
-                    local pf = GetPetFrame(f)
-                    if pf then
-                        pf:SetSize(fw, petH)
-                        pf:SetPoint("TOPLEFT", container, "TOPLEFT", x, -(y + fh + GAP))
-                        pf:Show()
-                        rowHasPet = true
+                    if not separatePets then
+                        local pf = GetPetFrame(f)
+                        if pf then
+                            pf:SetSize(fw, petH)
+                            pf:SetPoint("TOPLEFT", container, "TOPLEFT", x, -(y + fh + GAP))
+                            pf:Show()
+                            rowHasPet = true
+                        end
                     end
 
                     x = x + fw + GAP
@@ -2684,6 +3101,35 @@ Layout = function()
                     if count > maxCols then maxCols = count end
                 end
                 y = y + fh + GAP + (rowHasPet and (petH + GAP) or 0)
+            end
+        end
+
+        -- Pets in their own row at the bottom
+        if separatePets then
+            local pets = CollectPets()
+            if #pets > 0 then
+                if showLabels then
+                    local lbl = container.roleLabels.PETS
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -y)
+                    lbl:Show()
+                end
+                y = y + labelH
+                local x = 0
+                local count = 0
+                for _, pf in ipairs(pets) do
+                    if count >= MAX_PER_ROW then
+                        y = y + petH + GAP
+                        x = 0
+                        count = 0
+                    end
+                    pf:SetSize(fw, petH)
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+                    pf:Show()
+                    x = x + fw + GAP
+                    count = count + 1
+                    if count > maxCols then maxCols = count end
+                end
+                y = y + petH + GAP
             end
         end
 
@@ -2764,24 +3210,53 @@ end
 -- Test mode (/sh test) - fake frames for layout/styling
 ----------------------------------------------
 local testFrames = {}
+local TEST_MAX_HP = 8000
 
 local TEST_UNITS = {
-    { name = "Bearford",  class = "DRUID",   hp = 0.65 },
-    { name = "Shieldman", class = "WARRIOR", hp = 0.40 },
-    { name = "Palatank",  class = "PALADIN", hp = 0.85 },
-    { name = "Lightwell", class = "PRIEST",  hp = 1.00 },
-    { name = "Chainheal", class = "SHAMAN",  hp = 0.92 },
-    { name = "Treeform",  class = "DRUID",   hp = 0.77 },
-    { name = "Fireballs", class = "MAGE",    hp = 0.55 },
-    { name = "Backstabby", class = "ROGUE",  hp = 0.30 },
-    { name = "Dotmaster", class = "WARLOCK", hp = 0.88 },
-    { name = "Petlover",  class = "HUNTER",  hp = 0.70 },
-    { name = "Windfury",  class = "SHAMAN",  hp = 0.45 },
-    { name = "Moonfire",  class = "DRUID",   hp = 0.99 },
-    { name = "Shadowmind", class = "PRIEST", hp = 0.60 },
-    { name = "Arcaneblast", class = "MAGE",  hp = 0.25 },
-    { name = "Sealtwist", class = "PALADIN", hp = 0.50 },
+    -- Tanks
+    { name = "Shieldman",   class = "WARRIOR", role = "TANK",    hp = 0.40, hots = 2 },
+    { name = "Bearford",    class = "DRUID",   role = "TANK",    hp = 0.65, hots = 2 },
+    { name = "Palatank",    class = "PALADIN", role = "TANK",    hp = 0.85, hots = 1 },
+    -- Healers
+    { name = "Lightwell",   class = "PRIEST",  role = "HEALER",  hp = 1.00 },
+    { name = "Chainheal",   class = "SHAMAN",  role = "HEALER",  hp = 0.92 },
+    { name = "Treeform",    class = "DRUID",   role = "HEALER",  hp = 0.77 },
+    { name = "Sealtwist",   class = "PALADIN", role = "HEALER",  hp = 0.50 },
+    -- DPS
+    { name = "Fireballs",   class = "MAGE",    role = "DAMAGER", hp = 0.55, hots = 1 },
+    { name = "Backstabby",  class = "ROGUE",   role = "DAMAGER", hp = 0.30 },
+    { name = "Dotmaster",   class = "WARLOCK", role = "DAMAGER", hp = 0.88, pet = "Impling" },
+    { name = "Petlover",    class = "HUNTER",  role = "DAMAGER", hp = 0.70, pet = "Wolfie" },
+    { name = "Windfury",    class = "SHAMAN",  role = "DAMAGER", hp = 0.45 },
+    { name = "Moonfire",    class = "DRUID",   role = "DAMAGER", hp = 0.99 },
+    { name = "Shadowmind",  class = "PRIEST",  role = "DAMAGER", hp = 0.60 },
+    { name = "Arcaneblast", class = "MAGE",    role = "DAMAGER", hp = 0.25 },
 }
+
+local TEST_HOT_ICONS = {
+    "Interface\\Icons\\Spell_Nature_Rejuvenation",
+    "Interface\\Icons\\Spell_Nature_ResistNature",
+}
+local testPets = {}  -- [ownerIndex] = pet frame
+
+local function UpdateTestDeficit(f)
+    local hp = f.testHP
+    local diff = math.floor(hp - TEST_MAX_HP)
+    if diff < 0 then
+        local pct = math.floor(hp / TEST_MAX_HP * 100 + 0.5)
+        local hpMode = db.hpTextMode or 1
+        if hpMode == 2 then
+            f.deficit:SetText(pct .. "%")
+        elseif hpMode == 3 then
+            f.deficit:SetText(diff .. "  " .. pct .. "%")
+        else
+            f.deficit:SetText(diff)
+        end
+        f.deficit:SetTextColor(1, 1, 1)
+    else
+        f.deficit:SetText("")
+    end
+end
 
 local function CreateTestFrames()
     if #testFrames > 0 then return end
@@ -2798,48 +3273,158 @@ local function CreateTestFrames()
         hp:SetPoint("TOPLEFT", 1, -1)
         hp:SetPoint("BOTTOMRIGHT", -1, 1)
         hp:SetStatusBarTexture(barTex)
-        hp:SetMinMaxValues(0, 1)
-        hp:SetValue(tu.hp)
+        hp:SetMinMaxValues(0, TEST_MAX_HP)
+        hp:SetValue(tu.hp * TEST_MAX_HP)
         f.hp = hp
+        f.testHP = tu.hp * TEST_MAX_HP
 
         local hpBg = hp:CreateTexture(nil, "BACKGROUND")
         hpBg:SetAllPoints()
         hpBg:SetColorTexture(0.1, 0.1, 0.1, 1)
 
-        local cc = RAID_CLASS_COLORS[tu.class]
-        hp:SetStatusBarColor(cc.r, cc.g, cc.b)
+        -- Role icon (tank/healer)
+        local roleIcon = hp:CreateTexture(nil, "OVERLAY")
+        roleIcon:SetSize(10, 10)
+        roleIcon:SetPoint("LEFT", 3, 0)
+        roleIcon:SetTexture("Interface\\LFGFrame\\UI-LFG-ICON-PORTRAITROLES")
+        if tu.role == "TANK" then
+            roleIcon:SetTexCoord(0, 19/64, 22/64, 41/64)
+        elseif tu.role == "HEALER" then
+            roleIcon:SetTexCoord(20/64, 39/64, 1/64, 20/64)
+        else
+            roleIcon:Hide()
+        end
+        f.roleIcon = roleIcon
 
         local nameFs = hp:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        nameFs:SetPoint("LEFT", 4, 0)
         nameFs:SetTextColor(1, 1, 1)
         nameFs:SetText(tu.name)
         f.name = nameFs
 
         local defFs = hp:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        defFs:SetPoint("RIGHT", -4, 0)
-        if tu.hp < 1 then
-            defFs:SetText("-" .. math.floor((1 - tu.hp) * 8000))
-            defFs:SetTextColor(1, 0.4, 0.4)
-        end
         f.deficit = defFs
+        f.testIndex = i
+
+        -- Fake HoT icons with ticking timers
+        if tu.hots then
+            f.hots = {}
+            for h = 1, tu.hots do
+                local hot = CreateFrame("Frame", nil, f)
+                hot:SetFrameLevel(f:GetFrameLevel() + 3)
+                local icon = hot:CreateTexture(nil, "ARTWORK")
+                icon:SetAllPoints()
+                icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                icon:SetTexture(TEST_HOT_ICONS[h] or TEST_HOT_ICONS[1])
+                local border = hot:CreateTexture(nil, "BACKGROUND")
+                border:SetPoint("TOPLEFT", -1, 1)
+                border:SetPoint("BOTTOMRIGHT", 1, -1)
+                border:SetColorTexture(0, 0, 0, 0.8)
+                local timer = hot:CreateFontString(nil, "OVERLAY")
+                timer:SetFont(FONT_PATH, 7, "OUTLINE")
+                timer:SetPoint("CENTER", 0, 0)
+                timer:SetTextColor(1, 1, 1)
+                hot.timer = timer
+                hot.remaining = math.random(6, 18)
+                f.hots[h] = hot
+            end
+        end
 
         f:Hide()
         testFrames[i] = f
+
+        -- Fake pet frame
+        if tu.pet then
+            local pf = CreateFrame("Frame", nil, container)
+            local pbg = pf:CreateTexture(nil, "BACKGROUND")
+            pbg:SetAllPoints()
+            pbg:SetColorTexture(0.05, 0.05, 0.05, 0.95)
+            local php = CreateFrame("StatusBar", nil, pf)
+            php:SetPoint("TOPLEFT", 1, -1)
+            php:SetPoint("BOTTOMRIGHT", -1, 1)
+            php:SetStatusBarTexture(barTex)
+            php:SetMinMaxValues(0, TEST_MAX_HP)
+            php:SetValue(TEST_MAX_HP * 0.8)
+            php:SetStatusBarColor(0.4, 0.7, 0.4)
+            pf.hp = php
+            local phpBg = php:CreateTexture(nil, "BACKGROUND")
+            phpBg:SetAllPoints()
+            phpBg:SetColorTexture(0.1, 0.1, 0.1, 1)
+            local pName = php:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            pName:SetPoint("LEFT", 4, 0)
+            pName:SetTextColor(0.8, 0.8, 0.8)
+            pName:SetText(tu.pet)
+            pf.name = pName
+            pf.testHP = TEST_MAX_HP * 0.8
+            pf:Hide()
+            testPets[i] = pf
+        end
     end
 end
 
+-- Simulated damage and healing while test mode is active
+local testSim = CreateFrame("Frame")
+testSim:Hide()
+local testSimElapsed = 0
+testSim:SetScript("OnUpdate", function(_, dt)
+    testSimElapsed = testSimElapsed + dt
+    if testSimElapsed < 0.6 then return end
+    testSimElapsed = 0
+    for i, f in ipairs(testFrames) do
+        local r = math.random()
+        if r < 0.40 then
+            f.testHP = math.max(TEST_MAX_HP * 0.05, f.testHP - math.random(400, 1800))
+        elseif r < 0.80 then
+            f.testHP = math.min(TEST_MAX_HP, f.testHP + math.random(600, 2200))
+        end
+        SetHealthSmooth(f, f.testHP)
+        UpdateTestDeficit(f)
+
+        -- Tick fake HoT timers
+        if f.hots then
+            for _, hot in ipairs(f.hots) do
+                hot.remaining = hot.remaining - 0.6
+                if hot.remaining <= 0 then hot.remaining = math.random(8, 18) end
+                hot.timer:SetText(math.floor(hot.remaining))
+            end
+        end
+    end
+
+    -- Pets take a little damage too
+    for _, pf in pairs(testPets) do
+        if pf:IsShown() then
+            local r = math.random()
+            if r < 0.30 then
+                pf.testHP = math.max(TEST_MAX_HP * 0.2, pf.testHP - math.random(300, 900))
+            elseif r < 0.70 then
+                pf.testHP = math.min(TEST_MAX_HP, pf.testHP + math.random(400, 1200))
+            end
+            SetHealthSmooth(pf, pf.testHP)
+        end
+    end
+end)
+
 LayoutTestFrames = function()
     local fw, fh = db.frameW, db.frameH
+    local petH = math.floor(fh * 0.6)
     local size = db.fontSize or 10
     local barTex = GetBarTexture() or "Interface\\Buttons\\WHITE8X8"
     local mode = db.layoutMode or 1
-    local perGroup = (mode == 2) and 8 or 5
-
     local darkMode = (db.colorMode or 1) == 2
+    local twoLine = db.twoLineText
+    local showLabels = db.showRoleLabels ~= false and mode ~= 3
+    local labelH = showLabels and LABEL_HEIGHT or 0
+    local roleIconsOn = db.roleIcons ~= false
+    local showPets = db.showPets ~= false
+    local separatePets = showPets and db.petsSeparate
+    local inlinePets = showPets and not db.petsSeparate and mode ~= 3
+    local hotSize = db.iconSize or 10
+
+    -- Style all frames
     for i, f in ipairs(testFrames) do
+        local tu = TEST_UNITS[i]
         f:SetSize(fw, fh)
         f.hp:SetStatusBarTexture(barTex)
-        local cc = RAID_CLASS_COLORS[TEST_UNITS[i].class]
+        local cc = RAID_CLASS_COLORS[tu.class]
         if darkMode then
             f.hp:SetStatusBarColor(0.25, 0.25, 0.25)
             f.name:SetTextColor(cc.r, cc.g, cc.b)
@@ -2849,35 +3434,223 @@ LayoutTestFrames = function()
         end
         f.name:SetFont(FONT_PATH, size, "OUTLINE")
         f.deficit:SetFont(FONT_PATH, size, "OUTLINE")
-        f:ClearAllPoints()
 
-        local idx = i - 1
-        local group = math.floor(idx / perGroup)
-        local pos = idx % perGroup
+        local showRole = roleIconsOn and (tu.role == "TANK" or tu.role == "HEALER")
+        if showRole then f.roleIcon:Show() else f.roleIcon:Hide() end
 
-        if mode == 2 then
-            -- rows
-            f:SetPoint("TOPLEFT", container, "TOPLEFT",
-                pos * (fw + GAP), -(group * (fh + GAP)))
+        f.name:ClearAllPoints()
+        f.deficit:ClearAllPoints()
+        if twoLine then
+            f.name:SetPoint("TOP", 0, -3)
+            f.deficit:SetPoint("BOTTOM", 0, 3)
         else
-            -- columns & grid share col/row math (transposed)
-            if mode == 1 then
-                f:SetPoint("TOPLEFT", container, "TOPLEFT",
-                    group * (fw + GAP), -(pos * (fh + GAP)))
-            else
-                f:SetPoint("TOPLEFT", container, "TOPLEFT",
-                    pos * (fw + GAP), -(group * (fh + GAP)))
+            f.name:SetPoint("LEFT", showRole and 15 or 4, 0)
+            f.deficit:SetPoint("RIGHT", -4, 0)
+        end
+
+        -- HoT icons
+        if f.hots then
+            for h, hot in ipairs(f.hots) do
+                hot:SetSize(hotSize, hotSize)
+                hot:ClearAllPoints()
+                hot:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", (h - 1) * (hotSize + 1) + 1, 1)
+                hot.timer:SetFont(FONT_PATH, math.max(6, math.floor(hotSize * 0.7)), "OUTLINE")
+                hot.timer:SetText(math.floor(hot.remaining))
+                if db.showHots ~= false then hot:Show() else hot:Hide() end
             end
         end
+
+        UpdateTestDeficit(f)
         f:SetAlpha(db.frameAlpha or 1)
-        f:Show()
+        f:ClearAllPoints()
     end
 
-    local groups = math.ceil(#testFrames / perGroup)
+    -- Style + reset pets
+    for i, pf in pairs(testPets) do
+        pf:SetSize(fw, petH)
+        pf.hp:SetStatusBarTexture(barTex)
+        pf.name:SetFont(FONT_PATH, size, "OUTLINE")
+        pf:SetAlpha(db.frameAlpha or 1)
+        pf:ClearAllPoints()
+        pf:Hide()
+    end
+
+    local function PlacePetUnder(f, x, y)
+        if not inlinePets then return 0 end
+        local pet = testPets[f.testIndex]
+        if not pet then return 0 end
+        pet:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+        pet:Show()
+        return petH + GAP
+    end
+
+    local function CollectTestPets()
+        local pets = {}
+        for i, tu in ipairs(TEST_UNITS) do
+            if testPets[i] then pets[#pets + 1] = testPets[i] end
+        end
+        return pets
+    end
+
+    -- Group by role
+    local roleGroups = { TANK = {}, HEALER = {}, DAMAGER = {} }
+    for i, f in ipairs(testFrames) do
+        local role = TEST_UNITS[i].role
+        roleGroups[role][#roleGroups[role] + 1] = f
+    end
+
+    for _, lbl in pairs(container.roleLabels) do lbl:Hide() end
+
     if mode == 1 then
-        container:SetSize(groups * (fw + GAP) - GAP, perGroup * (fh + GAP) - GAP)
+        -- Columns by role
+        local MAX_PER_COL = 5
+        local col = 0
+        local maxY = 0
+        for _, roleKey in ipairs(ROLE_ORDER) do
+            local members = roleGroups[roleKey]
+            if #members > 0 then
+                if showLabels then
+                    local lbl = container.roleLabels[roleKey]
+                    lbl:ClearAllPoints()
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", col * (fw + GAP), 0)
+                    lbl:Show()
+                end
+                local y = labelH
+                local count = 0
+                for _, f in ipairs(members) do
+                    if count >= MAX_PER_COL then
+                        if y > maxY then maxY = y end
+                        col = col + 1
+                        y = labelH
+                        count = 0
+                    end
+                    f:SetPoint("TOPLEFT", container, "TOPLEFT", col * (fw + GAP), -y)
+                    f:Show()
+                    y = y + fh + GAP
+                    y = y + PlacePetUnder(f, col * (fw + GAP), y)
+                    count = count + 1
+                end
+                if y > maxY then maxY = y end
+                col = col + 1
+            end
+        end
+
+        -- Pets in their own column
+        if separatePets then
+            local pets = CollectTestPets()
+            if #pets > 0 then
+                if showLabels then
+                    local lbl = container.roleLabels.PETS
+                    lbl:ClearAllPoints()
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", col * (fw + GAP), 0)
+                    lbl:Show()
+                end
+                local y = labelH
+                for _, pf in ipairs(pets) do
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", col * (fw + GAP), -y)
+                    pf:Show()
+                    y = y + petH + GAP
+                end
+                if y > maxY then maxY = y end
+                col = col + 1
+            end
+        end
+
+        container:SetSize(math.max(col, 1) * (fw + GAP) - GAP, math.max(maxY, fh) - GAP)
+
+    elseif mode == 2 then
+        -- Rows by role
+        local MAX_PER_ROW = 8
+        local y = 0
+        local maxCols = 1
+        for _, roleKey in ipairs(ROLE_ORDER) do
+            local members = roleGroups[roleKey]
+            if #members > 0 then
+                if showLabels then
+                    local lbl = container.roleLabels[roleKey]
+                    lbl:ClearAllPoints()
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -y)
+                    lbl:Show()
+                end
+                y = y + labelH
+                local x = 0
+                local count = 0
+                local rowHasPet = false
+                for _, f in ipairs(members) do
+                    if count >= MAX_PER_ROW then
+                        y = y + fh + GAP + (rowHasPet and (petH + GAP) or 0)
+                        x = 0
+                        count = 0
+                        rowHasPet = false
+                    end
+                    f:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+                    f:Show()
+                    if PlacePetUnder(f, x, y + fh + GAP) > 0 then rowHasPet = true end
+                    x = x + fw + GAP
+                    count = count + 1
+                    if count > maxCols then maxCols = count end
+                end
+                y = y + fh + GAP + (rowHasPet and (petH + GAP) or 0)
+            end
+        end
+
+        -- Pets in their own row
+        if separatePets then
+            local pets = CollectTestPets()
+            if #pets > 0 then
+                if showLabels then
+                    local lbl = container.roleLabels.PETS
+                    lbl:ClearAllPoints()
+                    lbl:SetPoint("TOPLEFT", container, "TOPLEFT", 0, -y)
+                    lbl:Show()
+                end
+                y = y + labelH
+                local x = 0
+                for _, pf in ipairs(pets) do
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+                    pf:Show()
+                    x = x + fw + GAP
+                end
+                y = y + petH + GAP
+            end
+        end
+
+        container:SetSize(maxCols * (fw + GAP) - GAP, math.max(y - GAP, fh))
+
     else
-        container:SetSize(perGroup * (fw + GAP) - GAP, groups * (fh + GAP) - GAP)
+        -- Compact grid (pets always on their own row at the bottom)
+        local MAX_GRID_COLS = 5
+        local x, y = 0, 0
+        local count = 0
+        for _, roleKey in ipairs(ROLE_ORDER) do
+            for _, f in ipairs(roleGroups[roleKey]) do
+                if count >= MAX_GRID_COLS then
+                    y = y + fh + GAP
+                    x = 0
+                    count = 0
+                end
+                f:SetPoint("TOPLEFT", container, "TOPLEFT", x, -y)
+                f:Show()
+                x = x + fw + GAP
+                count = count + 1
+            end
+        end
+
+        if showPets then
+            local pets = CollectTestPets()
+            if #pets > 0 then
+                y = y + fh + GAP
+                local px = 0
+                for _, pf in ipairs(pets) do
+                    pf:SetPoint("TOPLEFT", container, "TOPLEFT", px, -y)
+                    pf:Show()
+                    px = px + fw + GAP
+                end
+                container:SetSize(MAX_GRID_COLS * (fw + GAP) - GAP, y + petH)
+                return
+            end
+        end
+        container:SetSize(MAX_GRID_COLS * (fw + GAP) - GAP, y + fh)
     end
 end
 
@@ -2895,9 +3668,19 @@ ToggleTestMode = function()
         end
         for _, lbl in pairs(container.roleLabels) do lbl:Hide() end
         LayoutTestFrames()
-        print("|cff00ff00SimpleHeal:|r Test mode ON - /sh test to exit")
+        testSim:Show()
+        print("|cff00ff00SimpleHeal:|r Test mode ON (simulating damage/heals) - /sh test to exit")
     else
-        for _, f in ipairs(testFrames) do f:Hide() end
+        testSim:Hide()
+        for _, f in ipairs(testFrames) do
+            f:Hide()
+            animFrames[f] = nil
+        end
+        for _, pf in pairs(testPets) do
+            pf:Hide()
+            animFrames[pf] = nil
+        end
+        for _, lbl in pairs(container.roleLabels) do lbl:Hide() end
         Layout()
         print("|cff00ff00SimpleHeal:|r Test mode OFF")
     end
@@ -2952,6 +3735,8 @@ local function CreateMinimapButton()
 
     local angle = db.minimapAngle or 220
     UpdatePosition(angle)
+
+    if db.showMinimap == false then btn:Hide() end
 
     local dragging = false
     btn:RegisterForDrag("LeftButton")
@@ -3067,6 +3852,21 @@ local function Init()
     if cdb.showTitle == nil then cdb.showTitle = true end
     if cdb.iconSize == nil then cdb.iconSize = 10 end
     if cdb.roleIcons == nil then cdb.roleIcons = true end
+    if cdb.twoLineText == nil then cdb.twoLineText = false end
+    if cdb.trackAllBuffs == nil then cdb.trackAllBuffs = false end
+    if cdb.buffExpireWarn == nil then cdb.buffExpireWarn = true end
+    if cdb.showMana == nil then cdb.showMana = true end
+    if cdb.showHots == nil then cdb.showHots = true end
+    if cdb.showOOC == nil then cdb.showOOC = true end
+    if cdb.smoothBars == nil then cdb.smoothBars = true end
+    if cdb.rangeFade == nil then cdb.rangeFade = true end
+    if cdb.showAggro == nil then cdb.showAggro = true end
+    if cdb.showRoleLabels == nil then cdb.showRoleLabels = true end
+    if cdb.showMinimap == nil then cdb.showMinimap = true end
+    if cdb.petsSeparate == nil then cdb.petsSeparate = false end
+    if cdb.hpTextMode == nil then
+        cdb.hpTextMode = cdb.hpPercent and 2 or 1  -- migrate old checkbox
+    end
     if not cdb.profiles then cdb.profiles = {} end
     if not cdb.activeProfile then cdb.activeProfile = "Default" end
     db = cdb
@@ -3123,6 +3923,7 @@ local function Init()
     UpdateCanCastBuffs()
     ApplyFontSize()
     ApplyIconSize()
+    ApplyTextLayout()
     RestorePosition()
     Layout()
     UpdateSpecVisibility()
@@ -3220,6 +4021,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         or event == "GROUP_ROSTER_UPDATE"
         or event == "PARTY_MEMBERS_CHANGED"
         or event == "RAID_ROSTER_UPDATE" then
+        AutoSwitchProfile()
         Layout()
     end
 

@@ -1,5 +1,21 @@
 # SimpleHeal Changelog
 
+## v1.6.0
+- New three-tab settings panel: Spells / Display / Advanced
+- Health text options: missing health, percent, or both
+- "Pets in own group" option - pets in their own column (right of DPS) or row instead of below owners
+- Auto Profile for arena (takes priority over party/raid)
+- Macro bindings: type "/cast [@unit,dead] Rebirth; [@unit,nodead] Swiftmend" in a spell field (@unit is replaced per frame). Also "target" and "menu" as special values
+- Two-line text option: name on top, missing health below (great for square frames)
+- Buff indicators now turn orange when a tracked buff has under 2 minutes left
+- "Track buffs from any class" option - track buffs you cannot cast yourself
+- Auto Profile: automatically switch profile in party, raid and arena
+- Hide Blizzard frames now also hides the classic party frames
+- 8 new display toggles: mana bar, HoT icons, smooth bars, OOC indicator, aggro border, role labels, range fade, minimap button (all default on)
+- Test mode overhaul: fake players grouped by role with labels, role icons, pets and ticking HoT icons - damage and healing is simulated live
+- Every setting updates the test frames instantly
+- Duplicate binding warning lists all conflicts
+
 ## v1.5.1
 - Safer settings migration: when upgrading from pre-1.4, ALL characters now inherit your previous setup (previously only the first character to log in got it)
 - New command /sh copy <name> - copy all settings from another character (use this if a character lost its setup after the 1.4 per-character change)
