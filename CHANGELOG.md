@@ -1,5 +1,9 @@
 # SimpleHeal Changelog
 
+## v1.7.2
+- Downranking: autocomplete now suggests every rank from your spellbook, e.g. "Healing Wave(Rank 3)". Ranked spells work in click bindings, scroll wheel, hover-cast keys and macros
+- Range fade and GCD tracking now work correctly when the bound spell has a rank suffix
+
 ## v1.7.1
 - Fixed: range fade now correctly fades players in another layer/phase or across the map (battlegrounds). Players the spell check cannot answer for use Blizzard's API range check instead of being assumed reachable
 - GCD sweep now only animates on the frame you last cast from, not all frames

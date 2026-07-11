@@ -359,15 +359,25 @@ local function RebuildSpellbookNames()
     for tab = 1, GetNumSpellTabs() do
         local _, _, offset, num = GetSpellTabInfo(tab)
         for i = offset + 1, offset + num do
-            local name
+            local name, subText
             if GetSpellBookItemName then
-                name = GetSpellBookItemName(i, "spell")
+                name, subText = GetSpellBookItemName(i, "spell")
             elseif GetSpellName then
-                name = GetSpellName(i, "spell")
+                name, subText = GetSpellName(i, "spell")
             end
-            if name and not seen[name] then
-                seen[name] = true
-                spellbookNames[#spellbookNames + 1] = name
+            if name then
+                if not seen[name] then
+                    seen[name] = true
+                    spellbookNames[#spellbookNames + 1] = name
+                end
+                -- Ranked variant for downranking, e.g. "Healing Wave(Rank 3)"
+                if subText and subText:match("^Rank%s") then
+                    local ranked = name .. "(" .. subText .. ")"
+                    if not seen[ranked] then
+                        seen[ranked] = true
+                        spellbookNames[#spellbookNames + 1] = ranked
+                    end
+                end
             end
         end
     end
@@ -1045,6 +1055,10 @@ local function ApplyBindings()
             local sp = SpellFromMacro(b.spell)
             if sp then rangeSpellName = sp break end
         end
+    end
+    -- Strip "(Rank X)" - range and GCD are the same for all ranks
+    if rangeSpellName then
+        rangeSpellName = rangeSpellName:match("^(.-)%s*%(") or rangeSpellName
     end
 
     for _, f in pairs(allFrames) do
@@ -1958,7 +1972,7 @@ local function CreateConfigPanel()
 
     local spellHint = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     spellHint:SetPoint("LEFT", spellHeader, "RIGHT", 6, 0)
-    spellHint:SetText("(spell, macro \"/...\", target, menu)")
+    spellHint:SetText("(spell, Spell(Rank 2), macro, target, menu)")
 
     -- Live validation: green if in spellbook, red if not.
     -- Macros ("/..."), "target" and "menu" are shown in blue.
