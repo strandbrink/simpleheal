@@ -1,5 +1,11 @@
 # SimpleHeal Changelog
 
+## v1.7.1
+- Fixed: range fade now correctly fades players in another layer/phase or across the map (battlegrounds). Players the spell check cannot answer for use Blizzard's API range check instead of being assumed reachable
+- GCD sweep now only animates on the frame you last cast from, not all frames
+- New option "Hide tooltips over frames" (default on): suppresses unit tooltips - including from tooltip addons like GearScore - while the mouse is over a SimpleHeal frame
+- Fixed: role icons and role-based layouts now work on battlegrounds (the game auto-assigns everyone DAMAGER there, which hid healer/tank icons and lumped everyone into the DPS column)
+
 ## v1.7.0
 New features:
 - Hover-cast keys (Clique-style): bind up to 5 keyboard keys (e.g. F1 or SHIFT-Q) that cast on the frame under your mouse - no clicking needed, works in combat

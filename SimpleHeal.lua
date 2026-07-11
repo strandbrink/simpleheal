@@ -204,6 +204,8 @@ local buffParseCache = {}
 local knownSpellCache = {}  -- [name] = true/false, wiped on SPELLS_CHANGED
 local scratchBuffs = {}     -- reusable per-Refresh buff name set
 local rangeSpellName        -- spell used for range fading, set by ApplyBindings
+local lastClickedFrame      -- last frame the player cast from (for the GCD sweep)
+local mouseOverFrame = false -- suppress tooltips while hovering a unit frame
 
 -- Map player class to a default preset
 local CLASS_PRESET = {
@@ -512,9 +514,12 @@ local HEALER_CLASSES = { PRIEST = true, SHAMAN = true, PALADIN = true, DRUID = t
 local TANK_CLASSES   = { WARRIOR = true }
 
 local function GetUnitRole(unit)
+    -- Only trust explicit tank/healer assignments. Battlegrounds auto-assign
+    -- everyone "DAMAGER", which would hide role icons for healers - fall back
+    -- to the class guess in that case, same as when no role is assigned.
     if UnitGroupRolesAssigned then
         local role = UnitGroupRolesAssigned(unit)
-        if role == "TANK" or role == "HEALER" or role == "DAMAGER" then return role end
+        if role == "TANK" or role == "HEALER" then return role end
     end
     local _, cls = UnitClass(unit)
     if not cls then return "DAMAGER" end
@@ -751,10 +756,27 @@ local function Refresh(f)
 
     -- Range check
     local baseAlpha = db.frameAlpha or 1
-    if db.rangeFade ~= false and rangeSpellName and IsSpellInRange(rangeSpellName, unit) == 0 then
-        f:SetAlpha(OOR_ALPHA * baseAlpha)
-    else
+    local inRange = true
+    if db.rangeFade ~= false and not UnitIsUnit(unit, "player") then
+        if not UnitIsVisible(unit) then
+            -- Different layer/phase or too far away to even see
+            inRange = false
+        elseif rangeSpellName then
+            local r = IsSpellInRange(rangeSpellName, unit)
+            if r == 0 then
+                inRange = false
+            elseif r == nil then
+                -- Spell check unavailable (dead target etc) - fall back to API range
+                inRange = UnitInRange(unit) and true or false
+            end
+        else
+            inRange = UnitInRange(unit) and true or false
+        end
+    end
+    if inRange then
         f:SetAlpha(baseAlpha)
+    else
+        f:SetAlpha(OOR_ALPHA * baseAlpha)
     end
 
     -- Incoming heals
@@ -1540,6 +1562,22 @@ local function MakeFrame(unit, parent)
     sd:RegisterForClicks("AnyUp", "AnyDown")
     sd:SetAttribute("unit", unit)
     f.scrollDown = sd
+
+    -- Track the last frame the player cast from (GCD sweep shows only there)
+    f:SetScript("PostClick", function(self) lastClickedFrame = self end)
+    su:SetScript("PostClick", function() lastClickedFrame = f end)
+    sd:SetScript("PostClick", function() lastClickedFrame = f end)
+
+    -- Suppress tooltips (incl. from tooltip addons) while hovering the frame
+    f:HookScript("OnEnter", function()
+        mouseOverFrame = true
+        if db.hideTooltip ~= false and GameTooltip:IsShown() then
+            GameTooltip:Hide()
+        end
+    end)
+    f:HookScript("OnLeave", function()
+        mouseOverFrame = false
+    end)
 
     SecureHandlerWrapScript(f, "OnEnter", f, [[
         local n = self:GetName()
@@ -2690,6 +2728,15 @@ local function CreateConfigPanel()
     AddTooltip(rangeEb, "Range check spell",
         "Spell used to measure range for the fade. Leave empty to auto-detect from your bindings (macros are parsed too).")
 
+    local cbHideTooltip = MakeCheckbox(t3, "Hide tooltips over frames", padX + 170, advTop - 4)
+    cbHideTooltip:SetChecked(db.hideTooltip ~= false)
+    cbHideTooltip:SetScript("OnClick", function(self)
+        db.hideTooltip = self:GetChecked() and true or false
+    end)
+    p.cbHideTooltip = cbHideTooltip
+    AddTooltip(cbHideTooltip, "Hide tooltips over frames",
+        "Suppresses unit tooltips (including from tooltip addons) while your mouse is over a SimpleHeal frame, so they never cover the frames.")
+
     local cbMinimap = MakeCheckbox(t3, "Minimap button", padX, advTop - 136)
     cbMinimap:SetChecked(db.showMinimap ~= false)
     cbMinimap:SetScript("OnClick", function(self)
@@ -3059,6 +3106,7 @@ local function ShowConfig()
     configPanel.cbLowHp:SetChecked(db.lowHpFlash ~= false)
     configPanel.cbGCD:SetChecked(db.showGCD ~= false)
     configPanel.rangeEb:SetText(db.rangeSpell or "")
+    configPanel.cbHideTooltip:SetChecked(db.hideTooltip ~= false)
     configPanel.sSlider:SetValue(db.spacing or 2)
     for i = 1, 5 do
         local hk = db.hoverKeys and db.hoverKeys[i]
@@ -4149,6 +4197,7 @@ local function Init()
     if cdb.showGCD == nil then cdb.showGCD = true end
     if not cdb.hoverKeys then cdb.hoverKeys = {} end
     if cdb.rangeSpell == nil then cdb.rangeSpell = "" end
+    if cdb.hideTooltip == nil then cdb.hideTooltip = true end
     if not cdb.profiles then cdb.profiles = {} end
     if not cdb.activeProfile then cdb.activeProfile = "Default" end
     db = cdb
@@ -4233,6 +4282,15 @@ local function Init()
 end
 
 ----------------------------------------------
+-- Tooltip suppression while hovering unit frames
+----------------------------------------------
+GameTooltip:HookScript("OnShow", function(self)
+    if mouseOverFrame and db and db.hideTooltip ~= false then
+        self:Hide()
+    end
+end)
+
+----------------------------------------------
 -- Events
 ----------------------------------------------
 local ev = CreateFrame("Frame")
@@ -4282,14 +4340,13 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         return
     end
 
-    -- GCD sweep on all visible frames
+    -- GCD sweep on the frame the player last cast from
     if event == "SPELL_UPDATE_COOLDOWN" then
-        if db.showGCD ~= false and rangeSpellName then
+        if db.showGCD ~= false and rangeSpellName
+            and lastClickedFrame and lastClickedFrame:IsShown() then
             local start, dur = GetSpellCooldown(rangeSpellName)
             if start and dur and dur > 0 and dur <= 1.6 then
-                for _, f in pairs(allFrames) do
-                    if f:IsShown() then f.gcd:SetCooldown(start, dur) end
-                end
+                lastClickedFrame.gcd:SetCooldown(start, dur)
             end
         end
         return
