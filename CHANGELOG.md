@@ -1,5 +1,28 @@
 # SimpleHeal Changelog
 
+## v1.7.0
+New features:
+- Hover-cast keys (Clique-style): bind up to 5 keyboard keys (e.g. F1 or SHIFT-Q) that cast on the frame under your mouse - no clicking needed, works in combat
+- Scroll wheel is now part of the binding list: pick "Wheel Up"/"Wheel Dn" as the button, with any modifier (Ctrl/Alt scroll now possible). Old scroll spells migrate automatically
+- Low HP warning: pulsing red border on players below 30% health (toggleable)
+- GCD indicator: small cooldown swirl on frames while your global cooldown runs (toggleable)
+- Debuff stacks and remaining time shown next to the dispellable debuff icon
+- Feign Death shows "FD" instead of DEAD - no more wasted rezzes on hunters
+- Spacing slider: gap between frames (0-10px)
+- Range check spell setting: pick which spell measures range fade, or leave empty for auto-detection (macros are parsed too)
+
+UI simplifications:
+- Save button removed - everything applies instantly, the button is now just "Close"
+- Display checkboxes grouped under Elements / Style headers
+- Sliders arranged two per row - shorter panel
+- "Reset" renamed to "Reset spells" with a clarifying tooltip
+- Hover-cast shows 3 rows with "+ 2 more" to expand
+- Binding counter on the add button, e.g. "+ Add binding (5/20)"
+
+Fixes:
+- Range fade now works when left click is a macro or "target"
+- Buff tracking fields allow 255 characters
+
 ## v1.6.1
 - Fixed: casting on an out-of-range player no longer falls back to healing yourself (all casts now use hard @unit macro conditionals)
 - Grid layout rework: two grid modes - groups as rows or groups as columns. Players are sorted by raid subgroup in stable roster order, so frames no longer shuffle around during battlegrounds

@@ -24,30 +24,27 @@ local DEFAULTS = {
     clickTarget = false,  -- target unit on click
 }
 
--- Scroll wheel bindings (fixed rows in the UI)
-local SCROLL_BINDINGS = {
-    { key = "SCROLL_UP",         label = "Scroll Up" },
-    { key = "SCROLL_DOWN",       label = "Scroll Down" },
-    { key = "SHIFT_SCROLL_UP",   label = "Shift + Scroll Up" },
-    { key = "SHIFT_SCROLL_DOWN", label = "Shift + Scroll Dn" },
-}
-
--- Click bindings: free combination of modifier + mouse button (Cell/HealBot style)
+-- Click bindings: free combination of modifier + mouse button/wheel (Cell/HealBot style)
+-- Buttons 1-5 = mouse buttons, 6 = wheel up, 7 = wheel down
 local MOD_OPTIONS = { "", "shift", "ctrl", "alt" }
 local MOD_LABELS  = { [""] = "None", shift = "Shift", ctrl = "Ctrl", alt = "Alt" }
-local BTN_LABELS  = { "Left", "Right", "Middle", "Btn 4", "Btn 5" }
+local BTN_LABELS  = { "Left", "Right", "Middle", "Btn 4", "Btn 5", "Wheel Up", "Wheel Dn" }
 local MAX_CLICK_BINDINGS = 20
 
 -- Old fixed keys -> {modifier, button} (for presets, migration and legacy import)
 local LEGACY_KEY_MAP = {
-    { "LEFT_CLICK",  "",      1 },
-    { "RIGHT_CLICK", "",      2 },
-    { "SHIFT_LEFT",  "shift", 1 },
-    { "SHIFT_RIGHT", "shift", 2 },
-    { "CTRL_LEFT",   "ctrl",  1 },
-    { "CTRL_RIGHT",  "ctrl",  2 },
-    { "ALT_LEFT",    "alt",   1 },
-    { "ALT_RIGHT",   "alt",   2 },
+    { "LEFT_CLICK",        "",      1 },
+    { "RIGHT_CLICK",       "",      2 },
+    { "SHIFT_LEFT",        "shift", 1 },
+    { "SHIFT_RIGHT",       "shift", 2 },
+    { "CTRL_LEFT",         "ctrl",  1 },
+    { "CTRL_RIGHT",        "ctrl",  2 },
+    { "ALT_LEFT",          "alt",   1 },
+    { "ALT_RIGHT",         "alt",   2 },
+    { "SCROLL_UP",         "",      6 },
+    { "SCROLL_DOWN",       "",      7 },
+    { "SHIFT_SCROLL_UP",   "shift", 6 },
+    { "SHIFT_SCROLL_DOWN", "shift", 7 },
 }
 
 -- Returns "Shift + Left, Ctrl + Right" listing every modifier+button combo used twice, or nil
@@ -190,7 +187,7 @@ local PRESETS = {
     },
 }
 
-local GAP         = 2
+local GAP         = 2  -- default; Layout reads db.spacing
 local OOR_ALPHA   = 0.4
 local UPDATE_HZ   = 0.3
 local BUFF_SIZE   = 7
@@ -342,12 +339,6 @@ end
 ----------------------------------------------
 -- Helpers
 ----------------------------------------------
-local function Spell(key)
-    local s = db.spells[key]
-    if s and s ~= "" then return s end
-    return nil
-end
-
 -- Cached "does the player know this spell" lookup
 local function KnownSpell(name)
     local v = knownSpellCache[name]
@@ -666,6 +657,14 @@ local function Refresh(f)
         f.targetBorder:Hide()
     end
 
+    -- Low HP warning
+    if db.lowHpFlash ~= false and not isDead and not isOffline
+        and hpMax > 0 and (hp / hpMax) < 0.3 then
+        if not f.lowHpBorder:IsShown() then f.lowHpBorder:Show() end
+    else
+        if f.lowHpBorder:IsShown() then f.lowHpBorder:Hide() end
+    end
+
     -- Rez indicator
     local hasRez = false
     if isDead and UnitHasIncomingResurrection then
@@ -680,7 +679,15 @@ local function Refresh(f)
     -- AFK check
     local isAFK = UnitIsAFK and UnitIsAFK(unit)
 
-    if isDead then
+    if isDead and UnitIsFeignDeath and UnitIsFeignDeath(unit) then
+        -- Hunter feigning death - not actually dead, don't waste a rez
+        f.hp:SetStatusBarColor(cr * 0.5, cg * 0.5, cb * 0.5)
+        f.deficit:SetText("FD")
+        f.deficit:SetTextColor(1, 0.85, 0.2)
+        f.statusText:Hide()
+        f.deadIcon:Hide()
+        f.rezIcon:Hide()
+    elseif isDead then
         f.hp:SetStatusBarColor(0.3, 0.3, 0.3)
         f.hp:SetValue(0)
         f.hpTarget = 0
@@ -776,18 +783,36 @@ local function Refresh(f)
     -- Debuff highlight (only debuffs the player can dispel)
     local debuffColor = nil
     local debuffTex = nil
+    local debuffCount = nil
+    local debuffExp = nil
     if not isDead and not isOffline then
         for i = 1, 40 do
-            local dName, dIcon, _, dType = UnitDebuff(unit, i)
+            local dName, dIcon, dStacks, dType, _, dExpTime = UnitDebuff(unit, i)
             if not dName then break end
             if dType and canDispel[dType] and DEBUFF_TYPE_COLORS[dType] then
                 debuffColor = DEBUFF_TYPE_COLORS[dType]
                 debuffTex = dIcon
+                debuffCount = dStacks
+                debuffExp = dExpTime
                 break
             end
         end
     end
     if debuffColor then
+        -- Stacks + remaining time next to the debuff icon
+        if debuffCount and debuffCount > 1 then
+            f.debuffStack:SetText(debuffCount)
+            f.debuffStack:Show()
+        else
+            f.debuffStack:Hide()
+        end
+        if debuffExp and debuffExp > 0 then
+            local remaining = debuffExp - GetTime()
+            f.debuffTimer:SetText(remaining > 0 and math.floor(remaining + 0.5) or "")
+            f.debuffTimer:Show()
+        else
+            f.debuffTimer:Hide()
+        end
         local dc = debuffColor
         f.debuffBorder.top:SetColorTexture(dc[1], dc[2], dc[3], 1)
         f.debuffBorder.bot:SetColorTexture(dc[1], dc[2], dc[3], 1)
@@ -801,6 +826,8 @@ local function Refresh(f)
     else
         f.debuffBorder:Hide()
         f.debuffIcon:Hide()
+        f.debuffStack:Hide()
+        f.debuffTimer:Hide()
     end
 
     -- Mana bar
@@ -955,17 +982,35 @@ local function ApplyBindings()
         print("|cff00ff00SimpleHeal:|r |cffff5555Warning:|r two bindings use " .. dup .. " - only the first one will cast!")
     end
 
-    -- Cache the spell used for range checks (unmodified left click, or first bound spell)
+    -- Cache the spell used for range checks.
+    -- Priority: explicit range spell setting > plain left-click spell >
+    -- any plain spell > spell extracted from a macro binding.
     local function IsPlainSpell(sp)
         if not sp or sp == "" then return false end
         local lower = sp:lower()
         return lower ~= "target" and lower ~= "menu" and sp:sub(1, 1) ~= "/"
     end
+    local function SpellFromMacro(text)
+        if not text or text:sub(1, 1) ~= "/" then return nil end
+        for castArgs in text:gmatch("/cast%s+([^\n;]+)") do
+            local name = castArgs:gsub("%[.-%]", ""):match("^%s*(.-)%s*$")
+            if name ~= "" and GetSpellInfo(name:match("^(.-)%s*%(") or name) then
+                return name
+            end
+        end
+        return nil
+    end
+
     rangeSpellName = nil
-    for _, b in ipairs(db.bindings or {}) do
-        if IsPlainSpell(b.spell) and b.mod == "" and b.btn == 1 then
-            rangeSpellName = b.spell
-            break
+    if db.rangeSpell and db.rangeSpell ~= "" then
+        rangeSpellName = db.rangeSpell
+    end
+    if not rangeSpellName then
+        for _, b in ipairs(db.bindings or {}) do
+            if IsPlainSpell(b.spell) and b.mod == "" and b.btn == 1 then
+                rangeSpellName = b.spell
+                break
+            end
         end
     end
     if not rangeSpellName then
@@ -973,11 +1018,17 @@ local function ApplyBindings()
             if IsPlainSpell(b.spell) then rangeSpellName = b.spell break end
         end
     end
+    if not rangeSpellName then
+        for _, b in ipairs(db.bindings or {}) do
+            local sp = SpellFromMacro(b.spell)
+            if sp then rangeSpellName = sp break end
+        end
+    end
 
     for _, f in pairs(allFrames) do
         local u = f.unit
 
-        -- Clear all click attributes (every modifier x button combo)
+        -- Clear all click attributes (every modifier x button combo, incl. wheel)
         for _, mod in ipairs(MOD_OPTIONS) do
             local prefix = mod == "" and "" or (mod .. "-")
             for btn = 1, 5 do
@@ -985,6 +1036,10 @@ local function ApplyBindings()
                 f:SetAttribute(prefix .. "spell" .. btn, nil)
                 f:SetAttribute(prefix .. "macrotext" .. btn, nil)
             end
+            f.scrollUp:SetAttribute(prefix .. "type", nil)
+            f.scrollUp:SetAttribute(prefix .. "macrotext", nil)
+            f.scrollDown:SetAttribute(prefix .. "type", nil)
+            f.scrollDown:SetAttribute(prefix .. "macrotext", nil)
         end
 
         -- Apply the configured click bindings.
@@ -994,26 +1049,37 @@ local function ApplyBindings()
         for _, b in ipairs(db.bindings or {}) do
             if b.spell and b.spell ~= "" and b.btn then
                 local prefix = b.mod == "" and "" or (b.mod .. "-")
-                if not f:GetAttribute(prefix .. "type" .. b.btn) then
+
+                -- Wheel bindings live on the hidden scroll buttons (no button suffix)
+                local target, typeAttr, macroAttr
+                if b.btn == 6 or b.btn == 7 then
+                    target = b.btn == 6 and f.scrollUp or f.scrollDown
+                    typeAttr = prefix .. "type"
+                    macroAttr = prefix .. "macrotext"
+                else
+                    target = f
+                    typeAttr = prefix .. "type" .. b.btn
+                    macroAttr = prefix .. "macrotext" .. b.btn
+                end
+
+                if not target:GetAttribute(typeAttr) then
                     local lower = b.spell:lower()
                     if lower == "target" then
-                        f:SetAttribute(prefix .. "type" .. b.btn, "target")
+                        target:SetAttribute(typeAttr, "target")
                     elseif lower == "menu" then
-                        f:SetAttribute(prefix .. "type" .. b.btn, "togglemenu")
+                        target:SetAttribute(typeAttr, "togglemenu")
                     elseif b.spell:sub(1, 1) == "/" then
-                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
-                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
-                            (b.spell:gsub("@unit", "@" .. u)))
+                        target:SetAttribute(typeAttr, "macro")
+                        target:SetAttribute(macroAttr, (b.spell:gsub("@unit", "@" .. u)))
                     elseif db.clickTarget then
-                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
-                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
+                        target:SetAttribute(typeAttr, "macro")
+                        target:SetAttribute(macroAttr,
                             "/target " .. u .. "\n/cast [@" .. u .. "] " .. b.spell)
                     else
                         -- Hard [@unit] macro: if the unit is invalid/out of range the cast
                         -- fails instead of falling back to self-cast
-                        f:SetAttribute(prefix .. "type" .. b.btn, "macro")
-                        f:SetAttribute(prefix .. "macrotext" .. b.btn,
-                            "/cast [@" .. u .. "] " .. b.spell)
+                        target:SetAttribute(typeAttr, "macro")
+                        target:SetAttribute(macroAttr, "/cast [@" .. u .. "] " .. b.spell)
                     end
                 end
             end
@@ -1027,21 +1093,35 @@ local function ApplyBindings()
             f:SetAttribute("type1", "target")
         end
 
-        local function SetScrollBinding(btn, attr_type, attr_macro, key)
-            local sp = Spell(key)
-            if sp then
-                btn:SetAttribute(attr_type, "macro")
-                btn:SetAttribute(attr_macro, "/cast [@" .. u .. "] " .. sp)
-            else
-                btn:SetAttribute(attr_type, nil)
-                btn:SetAttribute(attr_macro, nil)
+        -- Hover-cast keys (Clique-style): keys bound only while the mouse is
+        -- over the frame, casting on the hovered unit
+        local enterScript = ""
+        for i = 1, 5 do
+            local hk = db.hoverKeys and db.hoverKeys[i]
+            f:SetAttribute("type-hover" .. i, nil)
+            f:SetAttribute("macrotext-hover" .. i, nil)
+            if hk and hk.key and hk.key ~= "" and hk.spell and hk.spell ~= "" then
+                f:SetAttribute("type-hover" .. i, "macro")
+                local mt
+                if hk.spell:sub(1, 1) == "/" then
+                    mt = (hk.spell:gsub("@unit", "@" .. u))
+                else
+                    mt = "/cast [@" .. u .. "] " .. hk.spell
+                end
+                f:SetAttribute("macrotext-hover" .. i, mt)
+                enterScript = enterScript
+                    .. ("self:SetBindingClick(true, %q, self, %q)\n")
+                        :format(hk.key:upper(), "hover" .. i)
             end
         end
+        if enterScript ~= "" then
+            f:SetAttribute("_onenter", enterScript)
+            f:SetAttribute("_onleave", "self:ClearBindings()")
+        else
+            f:SetAttribute("_onenter", nil)
+            f:SetAttribute("_onleave", nil)
+        end
 
-        SetScrollBinding(f.scrollUp, "type", "macrotext", "SCROLL_UP")
-        SetScrollBinding(f.scrollUp, "shift-type", "shift-macrotext", "SHIFT_SCROLL_UP")
-        SetScrollBinding(f.scrollDown, "type", "macrotext", "SCROLL_DOWN")
-        SetScrollBinding(f.scrollDown, "shift-type", "shift-macrotext", "SHIFT_SCROLL_DOWN")
     end
 end
 
@@ -1112,7 +1192,7 @@ end
 local function MakeFrame(unit, parent)
     local fn = "SimpleHeal_" .. unit
 
-    local f = CreateFrame("Button", fn, parent, "SecureUnitButtonTemplate")
+    local f = CreateFrame("Button", fn, parent, "SecureUnitButtonTemplate,SecureHandlerEnterLeaveTemplate")
     f:SetSize(db.frameW, db.frameH)
     f.unit = unit
     f:SetAttribute("unit", unit)
@@ -1169,6 +1249,36 @@ local function MakeFrame(unit, parent)
     tbRight:SetWidth(TB_W)
     tbRight:SetColorTexture(1, 1, 1, 0.9)
 
+    -- Low HP warning border (pulsing red, shown under 30% health)
+    local lowHp = CreateFrame("Frame", nil, f)
+    lowHp:SetPoint("TOPLEFT", -2, 2)
+    lowHp:SetPoint("BOTTOMRIGHT", 2, -2)
+    lowHp:SetFrameLevel(f:GetFrameLevel() + 4)
+    lowHp:Hide()
+    f.lowHpBorder = lowHp
+
+    local LHP_W = 2
+    for _, edge in ipairs({
+        { "TOPLEFT", "TOPRIGHT", nil, LHP_W },
+        { "BOTTOMLEFT", "BOTTOMRIGHT", nil, LHP_W },
+        { "TOPLEFT", "BOTTOMLEFT", LHP_W, nil },
+        { "TOPRIGHT", "BOTTOMRIGHT", LHP_W, nil },
+    }) do
+        local t = lowHp:CreateTexture(nil, "OVERLAY")
+        t:SetPoint(edge[1]); t:SetPoint(edge[2])
+        if edge[3] then t:SetWidth(edge[3]) else t:SetHeight(edge[4]) end
+        t:SetColorTexture(1, 0.1, 0.1, 1)
+    end
+
+    local pulse = lowHp:CreateAnimationGroup()
+    pulse:SetLooping("BOUNCE")
+    local fade = pulse:CreateAnimation("Alpha")
+    fade:SetFromAlpha(1)
+    fade:SetToAlpha(0.15)
+    fade:SetDuration(0.4)
+    lowHp:SetScript("OnShow", function() pulse:Play() end)
+    lowHp:SetScript("OnHide", function() pulse:Stop() end)
+
     -- Incoming heal bar (lighter overlay on health bar)
     local incHeal = hp:CreateTexture(nil, "ARTWORK", nil, 1)
     incHeal:SetPoint("TOP")
@@ -1215,6 +1325,22 @@ local function MakeFrame(unit, parent)
     debuffIcon:Hide()
     f.debuffIcon = debuffIcon
 
+    -- Debuff stack count (bottom-right corner of the icon)
+    local debuffStack = debuffBorder:CreateFontString(nil, "OVERLAY")
+    debuffStack:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    debuffStack:SetPoint("BOTTOMRIGHT", debuffIcon, "BOTTOMRIGHT", 2, -1)
+    debuffStack:SetTextColor(1, 1, 1)
+    debuffStack:Hide()
+    f.debuffStack = debuffStack
+
+    -- Debuff time remaining (right of the icon)
+    local debuffTimer = debuffBorder:CreateFontString(nil, "OVERLAY")
+    debuffTimer:SetFont("Fonts\\FRIZQT__.TTF", 8, "OUTLINE")
+    debuffTimer:SetPoint("LEFT", debuffIcon, "RIGHT", 1, 0)
+    debuffTimer:SetTextColor(1, 0.8, 0.3)
+    debuffTimer:Hide()
+    f.debuffTimer = debuffTimer
+
     -- Mana bar (thin bar at bottom of health bar)
     local mana = CreateFrame("StatusBar", nil, f)
     mana:SetPoint("BOTTOMLEFT", hp, "BOTTOMLEFT", 0, 0)
@@ -1246,6 +1372,14 @@ local function MakeFrame(unit, parent)
     oocIcon:SetTexture("Interface\\RAIDFRAME\\ReadyCheck-Ready")
     oocIcon:Hide()
     f.oocIcon = oocIcon
+
+    -- GCD sweep (small cooldown swirl, bottom-right above the ooc dot)
+    local gcd = CreateFrame("Cooldown", nil, hp, "CooldownFrameTemplate")
+    gcd:SetSize(12, 12)
+    gcd:SetPoint("BOTTOMRIGHT", -2, 6)
+    gcd:SetDrawEdge(false)
+    if gcd.SetHideCountdownNumbers then gcd:SetHideCountdownNumbers(true) end
+    f.gcd = gcd
 
     -- Raid marker icon (top-left)
     local raidIcon = f:CreateTexture(nil, "OVERLAY")
@@ -1465,7 +1599,7 @@ local function CreateConfigPanel()
     local panelW  = 340
     local rowH    = 28
     local padX    = 12
-    local panelH  = 700
+    local panelH  = 660
 
     local p = CreateFrame("Frame", "SimpleHealConfig", UIParent, "BackdropTemplate")
     p:SetSize(panelW, panelH)
@@ -1619,11 +1753,6 @@ local function CreateConfigPanel()
     local function FillFromPreset(preset)
         p.takeSnapshot()
         db.bindings = BindingsFromLegacySpells(preset.spells)
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            local sp = preset.spells[binding.key] or ""
-            p.editBoxes[binding.key]:SetText(sp)
-            db.spells[binding.key] = sp
-        end
         for slot = 1, 4 do
             local b = preset.buffs and preset.buffs[slot] or ""
             p.buffBoxes[slot]:SetText(b)
@@ -1683,9 +1812,6 @@ local function CreateConfigPanel()
         db.activeProfile = name
         UIDropDownMenu_SetText(profDrop, name)
         p.RefreshBindingRows()
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
-        end
         for s = 1, 4 do
             p.buffBoxes[s]:SetText(db.buffs[s] or "")
         end
@@ -1777,9 +1903,6 @@ local function CreateConfigPanel()
             table.insert(db.bindings, { mod = b.mod, btn = b.btn, spell = b.spell })
         end
         p.RefreshBindingRows()
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
-        end
         for s = 1, 4 do
             p.buffBoxes[s]:SetText(db.buffs[s] or "")
         end
@@ -1871,6 +1994,7 @@ local function CreateConfigPanel()
     local bindChild = CreateFrame("Frame", nil, bindScroll)
     bindChild:SetSize(panelW - padX * 2 - 20, MAX_CLICK_BINDINGS * bindRowH)
     bindScroll:SetScrollChild(bindChild)
+    bindChild:SetPoint("TOPLEFT", 0, 0)
 
     for i = 1, MAX_CLICK_BINDINGS do
         local row = CreateFrame("Frame", nil, bindChild)
@@ -1899,11 +2023,11 @@ local function CreateConfigPanel()
         btnBtn:SetScript("OnClick", function()
             local b = db.bindings[i]
             if not b then return end
-            b.btn = (b.btn % 5) + 1
+            b.btn = (b.btn % 7) + 1
             btnBtn:SetText(BTN_LABELS[b.btn])
             ApplyRowToDB(i)
         end)
-        AddTooltip(btnBtn, "Mouse button", "Click to cycle: Left / Right / Middle / Button 4 / Button 5")
+        AddTooltip(btnBtn, "Mouse button", "Click to cycle: Left / Right / Middle / Button 4 / Button 5 / Wheel Up / Wheel Down")
 
         local eb = CreateFrame("EditBox", "SimpleHealBindEB" .. i, row, "InputBoxTemplate")
         eb:SetSize(140, 20)
@@ -1937,7 +2061,7 @@ local function CreateConfigPanel()
     end
 
     local addBindBtn = CreateFrame("Button", nil, t1, "UIPanelButtonTemplate")
-    addBindBtn:SetSize(110, 20)
+    addBindBtn:SetSize(140, 20)
     addBindBtn:SetText("+ Add binding")
     addBindBtn:SetPoint("TOPLEFT", padX, -bindTop - VISIBLE_BIND_ROWS * bindRowH - 4)
     addBindBtn:SetScript("OnClick", function()
@@ -1982,6 +2106,7 @@ local function CreateConfigPanel()
                 row:Hide()
             end
         end
+        addBindBtn:SetText(("+ Add binding (%d/%d)"):format(#db.bindings, MAX_CLICK_BINDINGS))
         if #db.bindings >= MAX_CLICK_BINDINGS then
             addBindBtn:Disable()
         else
@@ -1991,41 +2116,8 @@ local function CreateConfigPanel()
     end
     p.RefreshBindingRows()
 
-    -- Scroll wheel bindings (fixed rows below the click bindings)
-    local scrollY = -bindTop - VISIBLE_BIND_ROWS * bindRowH - 32
-    local dividerLine = t1:CreateTexture(nil, "ARTWORK")
-    dividerLine:SetPoint("TOPLEFT", padX, scrollY + 8)
-    dividerLine:SetPoint("TOPRIGHT", -padX, scrollY + 8)
-    dividerLine:SetHeight(1)
-    dividerLine:SetColorTexture(0.4, 0.4, 0.4, 0.6)
-
-    local scrollHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    scrollHeader:SetPoint("TOPLEFT", padX, scrollY + 2)
-    scrollHeader:SetText("Scroll wheel")
-
-    p.editBoxes = {}
-    local scrollTop = -scrollY + 16
-    for i, binding in ipairs(SCROLL_BINDINGS) do
-        local y = -scrollTop - (i - 1) * bindRowH
-        local label = t1:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        label:SetPoint("TOPLEFT", padX, y)
-        label:SetWidth(120)
-        label:SetJustifyH("RIGHT")
-        label:SetText(binding.label)
-        local eb = CreateFrame("EditBox", "SimpleHealEB" .. i, t1, "InputBoxTemplate")
-        eb:SetSize(160, 20)
-        eb:SetPoint("TOPLEFT", padX + 128, y + 2)
-        eb:SetAutoFocus(false)
-        eb:SetMaxLetters(40)
-        eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
-        eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-        AttachValidation(eb)
-        AttachAutocomplete(eb, false)
-        p.editBoxes[binding.key] = eb
-    end
-
     -- Buff tracking
-    local buffTop = scrollTop + #SCROLL_BINDINGS * bindRowH + 24
+    local buffTop = bindTop + VISIBLE_BIND_ROWS * bindRowH + 44
     local buffHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     buffHeader:SetPoint("TOPLEFT", padX, -buffTop + 14)
     buffHeader:SetText("Missing Buff Alerts")
@@ -2050,9 +2142,13 @@ local function CreateConfigPanel()
         eb:SetSize(190, 20)
         eb:SetPoint("TOPLEFT", padX + 88, y + 2)
         eb:SetAutoFocus(false)
-        eb:SetMaxLetters(80)
+        eb:SetMaxLetters(255)
         eb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         eb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        eb:HookScript("OnEditFocusLost", function(self)
+            db.buffs[slot] = self:GetText() or ""
+            UpdateCanCastBuffs()
+        end)
         AttachAutocomplete(eb, true)
 
         -- Spell icon preview (first name in the list)
@@ -2144,7 +2240,7 @@ local function CreateConfigPanel()
     sizeHeader:SetText("Frame Size & Opacity")
     sizeHeader:SetTextColor(1, 0.82, 0)
 
-    local wSlider = MakeSlider("Width", 50, 200, 5, padX + 80, sliderTop - 18, 220)
+    local wSlider = MakeSlider("Width", 50, 200, 5, padX + 10, sliderTop - 18, 130)
     wSlider:SetValue(db.frameW)
     if wSlider.Text then wSlider.Text:SetText("Width: " .. db.frameW) end
     wSlider:SetScript("OnValueChanged", function(self, val)
@@ -2158,7 +2254,7 @@ local function CreateConfigPanel()
     end)
     p.wSlider = wSlider
 
-    local hSlider = MakeSlider("Height", 16, 80, 2, padX + 80, sliderTop - 48, 220)
+    local hSlider = MakeSlider("Height", 16, 80, 2, padX + 172, sliderTop - 18, 130)
     hSlider:SetValue(db.frameH)
     if hSlider.Text then hSlider.Text:SetText("Height: " .. db.frameH) end
     hSlider:SetScript("OnValueChanged", function(self, val)
@@ -2172,7 +2268,7 @@ local function CreateConfigPanel()
     end)
     p.hSlider = hSlider
 
-    local aSlider = MakeSlider("Alpha", 20, 100, 5, padX + 80, sliderTop - 78, 220)
+    local aSlider = MakeSlider("Alpha", 20, 100, 5, padX + 10, sliderTop - 62, 130)
     local alphaVal = math.floor((db.frameAlpha or 1) * 100)
     aSlider:SetValue(alphaVal)
     if aSlider.Text then aSlider.Text:SetText("Opacity: " .. alphaVal .. "%") end
@@ -2187,7 +2283,7 @@ local function CreateConfigPanel()
     end)
     p.aSlider = aSlider
 
-    local fSlider = MakeSlider("Font", 7, 16, 1, padX + 80, sliderTop - 108, 220)
+    local fSlider = MakeSlider("Font", 7, 16, 1, padX + 172, sliderTop - 62, 130)
     fSlider:SetValue(db.fontSize or 10)
     if fSlider.Text then fSlider.Text:SetText("Font size: " .. (db.fontSize or 10)) end
     fSlider:SetScript("OnValueChanged", function(self, val)
@@ -2199,7 +2295,7 @@ local function CreateConfigPanel()
     end)
     p.fSlider = fSlider
 
-    local iSlider = MakeSlider("Icon", 6, 20, 1, padX + 80, sliderTop - 138, 220)
+    local iSlider = MakeSlider("Icon", 6, 20, 1, padX + 10, sliderTop - 106, 130)
     iSlider:SetValue(db.iconSize or 10)
     if iSlider.Text then iSlider.Text:SetText("Icon size: " .. (db.iconSize or 10)) end
     iSlider:SetScript("OnValueChanged", function(self, val)
@@ -2213,14 +2309,26 @@ local function CreateConfigPanel()
     AddTooltip(iSlider, "Icon size",
         "Size of the HoT icons (bottom-left) and missing-buff indicators (top-right) on each frame.")
 
+    local sSlider = MakeSlider("Spacing", 0, 10, 1, padX + 172, sliderTop - 106, 130)
+    sSlider:SetValue(db.spacing or 2)
+    if sSlider.Text then sSlider.Text:SetText("Spacing: " .. (db.spacing or 2)) end
+    sSlider:SetScript("OnValueChanged", function(self, val)
+        val = math.floor(val)
+        if self.Text then self.Text:SetText("Spacing: " .. val) end
+        db.spacing = val
+        if not InCombatLockdown() then Layout() end
+    end)
+    p.sSlider = sSlider
+    AddTooltip(sSlider, "Spacing", "Gap between frames in pixels.")
+
     -- Appearance
     local texHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    texHeader:SetPoint("TOPLEFT", padX, sliderTop - 164)
+    texHeader:SetPoint("TOPLEFT", padX, sliderTop - 148)
     texHeader:SetText("Appearance")
     texHeader:SetTextColor(1, 0.82, 0)
 
     local texLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    texLabel:SetPoint("TOPLEFT", padX, sliderTop - 186)
+    texLabel:SetPoint("TOPLEFT", padX, sliderTop - 170)
     texLabel:SetText("Bar Texture")
 
     local texDrop = CreateFrame("Frame", "SimpleHealBarTextureDrop", t2, "UIDropDownMenuTemplate")
@@ -2247,7 +2355,7 @@ local function CreateConfigPanel()
     -- Layout mode dropdown
     local LAYOUT_MODES = { "Columns (by role)", "Rows (by role)", "Grid (groups as rows)", "Grid (groups as columns)" }
     local layoutLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    layoutLabel:SetPoint("TOPLEFT", padX, sliderTop - 216)
+    layoutLabel:SetPoint("TOPLEFT", padX, sliderTop - 200)
     layoutLabel:SetText("Layout")
 
     local layoutDrop = CreateFrame("Frame", "SimpleHealLayoutDrop", t2, "UIDropDownMenuTemplate")
@@ -2272,7 +2380,7 @@ local function CreateConfigPanel()
     -- Color mode dropdown
     local COLOR_MODES = { "Class-colored bars", "Dark bars, colored names" }
     local colorLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    colorLabel:SetPoint("TOPLEFT", padX, sliderTop - 246)
+    colorLabel:SetPoint("TOPLEFT", padX, sliderTop - 230)
     colorLabel:SetText("Colors")
 
     local colorDrop = CreateFrame("Frame", "SimpleHealColorDrop", t2, "UIDropDownMenuTemplate")
@@ -2297,7 +2405,7 @@ local function CreateConfigPanel()
     -- Health text dropdown
     local HEALTH_MODES = { "Missing health (-1234)", "Percent (87%)", "Both" }
     local healthLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    healthLabel:SetPoint("TOPLEFT", padX, sliderTop - 276)
+    healthLabel:SetPoint("TOPLEFT", padX, sliderTop - 260)
     healthLabel:SetText("Health text")
 
     local healthDrop = CreateFrame("Frame", "SimpleHealHealthDrop", t2, "UIDropDownMenuTemplate")
@@ -2325,7 +2433,7 @@ local function CreateConfigPanel()
     end)
 
     -- Display checkboxes
-    local cbTop = sliderTop - 312
+    local cbTop = sliderTop - 296
 
     local function MakeCheckbox(parent, label, x, y)
         local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
@@ -2338,12 +2446,17 @@ local function CreateConfigPanel()
         return cb
     end
 
-    local optHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    optHeader:SetPoint("TOPLEFT", padX, cbTop + 14)
-    optHeader:SetText("Options")
-    optHeader:SetTextColor(1, 0.82, 0)
+    local elemHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    elemHeader:SetPoint("TOPLEFT", padX, cbTop + 14)
+    elemHeader:SetText("Elements")
+    elemHeader:SetTextColor(1, 0.82, 0)
 
-    local cbLock = MakeCheckbox(t2, "Lock position", padX, cbTop - 4)
+    local styleHeader = t2:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    styleHeader:SetPoint("TOPLEFT", padX + 170, cbTop + 14)
+    styleHeader:SetText("Style")
+    styleHeader:SetTextColor(1, 0.82, 0)
+
+    local cbLock = MakeCheckbox(t2, "Lock position", padX + 170, cbTop - 4)
     cbLock:SetChecked(db.locked)
     cbLock:SetScript("OnClick", function(self)
         db.locked = self:GetChecked() and true or false
@@ -2352,7 +2465,7 @@ local function CreateConfigPanel()
     p.cbLock = cbLock
     AddTooltip(cbLock, "Lock position", "Locks the frames so they cannot be moved by dragging.")
 
-    local cbTwoLine = MakeCheckbox(t2, "Two-line text", padX, cbTop - 26)
+    local cbTwoLine = MakeCheckbox(t2, "Two-line text", padX + 170, cbTop - 26)
     cbTwoLine:SetChecked(db.twoLineText or false)
     cbTwoLine:SetScript("OnClick", function(self)
         db.twoLineText = self:GetChecked() and true or false
@@ -2365,7 +2478,7 @@ local function CreateConfigPanel()
     p.cbTwoLine = cbTwoLine
     AddTooltip(cbTwoLine, "Two-line text", "Name on the first line and missing health on the second - good for square frames.")
 
-    local cbShowPets = MakeCheckbox(t2, "Show pets", padX + 170, cbTop - 4)
+    local cbShowPets = MakeCheckbox(t2, "Show pets", padX + 170, cbTop - 70)
     cbShowPets:SetChecked(db.showPets ~= false)
     cbShowPets:SetScript("OnClick", function(self)
         db.showPets = self:GetChecked() and true or false
@@ -2374,7 +2487,7 @@ local function CreateConfigPanel()
     p.cbShowPets = cbShowPets
     AddTooltip(cbShowPets, "Show pets", "Shows hunter/warlock pets as small frames below their owner.")
 
-    local cbTitle = MakeCheckbox(t2, "Show title", padX + 170, cbTop - 26)
+    local cbTitle = MakeCheckbox(t2, "Show title", padX + 170, cbTop - 114)
     cbTitle:SetChecked(db.showTitle ~= false)
     cbTitle:SetScript("OnClick", function(self)
         db.showTitle = self:GetChecked() and true or false
@@ -2385,7 +2498,7 @@ local function CreateConfigPanel()
     p.cbTitle = cbTitle
     AddTooltip(cbTitle, "Show title", "Shows the SimpleHeal label on the drag handle above the frames.")
 
-    local cbRoleIcons = MakeCheckbox(t2, "Role icons", padX + 170, cbTop - 48)
+    local cbRoleIcons = MakeCheckbox(t2, "Role icons", padX, cbTop - 92)
     cbRoleIcons:SetChecked(db.roleIcons ~= false)
     cbRoleIcons:SetScript("OnClick", function(self)
         db.roleIcons = self:GetChecked() and true or false
@@ -2403,7 +2516,7 @@ local function CreateConfigPanel()
         end
     end
 
-    local cbMana = MakeCheckbox(t2, "Mana bar", padX, cbTop - 48)
+    local cbMana = MakeCheckbox(t2, "Mana bar", padX, cbTop - 4)
     cbMana:SetChecked(db.showMana ~= false)
     cbMana:SetScript("OnClick", function(self)
         db.showMana = self:GetChecked() and true or false
@@ -2412,7 +2525,7 @@ local function CreateConfigPanel()
     p.cbMana = cbMana
     AddTooltip(cbMana, "Mana bar", "Shows the thin mana/rage/energy bar at the bottom of each frame.")
 
-    local cbHots = MakeCheckbox(t2, "HoT icons", padX, cbTop - 70)
+    local cbHots = MakeCheckbox(t2, "HoT icons", padX, cbTop - 26)
     cbHots:SetChecked(db.showHots ~= false)
     cbHots:SetScript("OnClick", function(self)
         db.showHots = self:GetChecked() and true or false
@@ -2422,7 +2535,7 @@ local function CreateConfigPanel()
     p.cbHots = cbHots
     AddTooltip(cbHots, "HoT icons", "Shows your own HoTs/buffs with timers in the bottom-left corner of each frame.")
 
-    local cbSmooth = MakeCheckbox(t2, "Smooth bars", padX, cbTop - 92)
+    local cbSmooth = MakeCheckbox(t2, "Smooth bars", padX + 170, cbTop - 48)
     cbSmooth:SetChecked(db.smoothBars ~= false)
     cbSmooth:SetScript("OnClick", function(self)
         db.smoothBars = self:GetChecked() and true or false
@@ -2430,7 +2543,7 @@ local function CreateConfigPanel()
     p.cbSmooth = cbSmooth
     AddTooltip(cbSmooth, "Smooth bars", "Animates health bar changes instead of jumping instantly.")
 
-    local cbOOC = MakeCheckbox(t2, "OOC indicator", padX + 170, cbTop - 70)
+    local cbOOC = MakeCheckbox(t2, "OOC indicator", padX, cbTop - 48)
     cbOOC:SetChecked(db.showOOC ~= false)
     cbOOC:SetScript("OnClick", function(self)
         db.showOOC = self:GetChecked() and true or false
@@ -2439,7 +2552,7 @@ local function CreateConfigPanel()
     p.cbOOC = cbOOC
     AddTooltip(cbOOC, "Out-of-combat indicator", "Shows a green dot on players that are out of combat.")
 
-    local cbAggro = MakeCheckbox(t2, "Aggro border", padX + 170, cbTop - 92)
+    local cbAggro = MakeCheckbox(t2, "Aggro border", padX, cbTop - 70)
     cbAggro:SetChecked(db.showAggro ~= false)
     cbAggro:SetScript("OnClick", function(self)
         db.showAggro = self:GetChecked() and true or false
@@ -2448,7 +2561,7 @@ local function CreateConfigPanel()
     p.cbAggro = cbAggro
     AddTooltip(cbAggro, "Aggro border", "Shows a red line at the top of frames when a player has threat.")
 
-    local cbPetsSep = MakeCheckbox(t2, "Pets in own group", padX, cbTop - 114)
+    local cbPetsSep = MakeCheckbox(t2, "Pets in own group", padX + 170, cbTop - 92)
     cbPetsSep:SetChecked(db.petsSeparate or false)
     cbPetsSep:SetScript("OnClick", function(self)
         db.petsSeparate = self:GetChecked() and true or false
@@ -2458,7 +2571,7 @@ local function CreateConfigPanel()
     AddTooltip(cbPetsSep, "Pets in own group",
         "Places all pets in their own column (right of DPS) or row instead of below their owners.")
 
-    local cbRoleLabels = MakeCheckbox(t2, "Role labels", padX + 170, cbTop - 114)
+    local cbRoleLabels = MakeCheckbox(t2, "Role labels", padX, cbTop - 114)
     cbRoleLabels:SetChecked(db.showRoleLabels ~= false)
     cbRoleLabels:SetScript("OnClick", function(self)
         db.showRoleLabels = self:GetChecked() and true or false
@@ -2466,6 +2579,23 @@ local function CreateConfigPanel()
     end)
     p.cbRoleLabels = cbRoleLabels
     AddTooltip(cbRoleLabels, "Role labels", "Shows the TANKS / HEALERS / DPS headers above each group.")
+
+    local cbLowHp = MakeCheckbox(t2, "Low HP warning", padX, cbTop - 158)
+    cbLowHp:SetChecked(db.lowHpFlash ~= false)
+    cbLowHp:SetScript("OnClick", function(self)
+        db.lowHpFlash = self:GetChecked() and true or false
+        RefreshAll()
+    end)
+    p.cbLowHp = cbLowHp
+    AddTooltip(cbLowHp, "Low HP warning", "Pulsing red border on players below 30% health.")
+
+    local cbGCD = MakeCheckbox(t2, "GCD indicator", padX, cbTop - 136)
+    cbGCD:SetChecked(db.showGCD ~= false)
+    cbGCD:SetScript("OnClick", function(self)
+        db.showGCD = self:GetChecked() and true or false
+    end)
+    p.cbGCD = cbGCD
+    AddTooltip(cbGCD, "GCD indicator", "Small cooldown swirl in the corner of each frame while your global cooldown is running.")
 
     ------------------------------------------------
     -- TAB 3: Advanced - behavior options
@@ -2534,6 +2664,32 @@ local function CreateConfigPanel()
     AddTooltip(cbRangeFade, "Range fade",
         "Fades frames of players that are out of range of your left-click heal.")
 
+    -- Explicit range-check spell (needed when left click is a macro or "target")
+    local rangeLabel = t3:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    rangeLabel:SetPoint("TOPLEFT", padX + 168, advTop - 119)
+    rangeLabel:SetText("Spell:")
+
+    local rangeEb = CreateFrame("EditBox", "SimpleHealRangeSpell", t3, "InputBoxTemplate")
+    rangeEb:SetSize(110, 20)
+    rangeEb:SetPoint("LEFT", rangeLabel, "RIGHT", 8, 0)
+    rangeEb:SetAutoFocus(false)
+    rangeEb:SetMaxLetters(60)
+    rangeEb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    rangeEb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    rangeEb:HookScript("OnEditFocusLost", function(self)
+        db.rangeSpell = self:GetText() or ""
+        if InCombatLockdown() then
+            pendingApply = true
+        else
+            ApplyBindings()
+        end
+    end)
+    AttachValidation(rangeEb)
+    AttachAutocomplete(rangeEb, false)
+    p.rangeEb = rangeEb
+    AddTooltip(rangeEb, "Range check spell",
+        "Spell used to measure range for the fade. Leave empty to auto-detect from your bindings (macros are parsed too).")
+
     local cbMinimap = MakeCheckbox(t3, "Minimap button", padX, advTop - 136)
     cbMinimap:SetChecked(db.showMinimap ~= false)
     cbMinimap:SetScript("OnClick", function(self)
@@ -2586,6 +2742,91 @@ local function CreateConfigPanel()
     AddTooltip(p.autoRaidDrop, "Auto profile", "Automatically switch to this profile when you join a raid.")
     AddTooltip(p.autoArenaDrop, "Auto profile", "Automatically switch to this profile when you enter an arena (takes priority over party/raid).")
 
+    ------------------------------------------------
+    -- Hover-cast keys (Clique-style)
+    ------------------------------------------------
+    local hoverHeader = t3:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    hoverHeader:SetPoint("TOPLEFT", padX, advTop - 296)
+    hoverHeader:SetText("Hover-Cast Keys")
+    hoverHeader:SetTextColor(1, 0.82, 0)
+
+    local hoverHint = t3:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hoverHint:SetPoint("LEFT", hoverHeader, "RIGHT", 6, 0)
+    hoverHint:SetText("(key + spell, e.g. F1 / SHIFT-Q)")
+
+    p.hoverRows = {}
+    local hoverTop = -advTop + 312
+    for i = 1, 5 do
+        local y = -hoverTop - (i - 1) * 24
+
+        local keyEb = CreateFrame("EditBox", "SimpleHealHoverKey" .. i, t3, "InputBoxTemplate")
+        keyEb:SetSize(70, 20)
+        keyEb:SetPoint("TOPLEFT", padX + 8, y)
+        keyEb:SetAutoFocus(false)
+        keyEb:SetMaxLetters(20)
+        keyEb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        keyEb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+        local spellEb = CreateFrame("EditBox", "SimpleHealHoverSpell" .. i, t3, "InputBoxTemplate")
+        spellEb:SetSize(190, 20)
+        spellEb:SetPoint("LEFT", keyEb, "RIGHT", 8, 0)
+        spellEb:SetAutoFocus(false)
+        spellEb:SetMaxLetters(255)
+        spellEb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        spellEb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        AttachValidation(spellEb)
+        AttachAutocomplete(spellEb, false)
+
+        local function CommitHoverRow()
+            if not db.hoverKeys then db.hoverKeys = {} end
+            db.hoverKeys[i] = {
+                key = (keyEb:GetText() or ""):gsub("%s+", ""):upper(),
+                spell = spellEb:GetText() or "",
+            }
+            keyEb:SetText(db.hoverKeys[i].key)
+            if InCombatLockdown() then
+                pendingApply = true
+            else
+                ApplyBindings()
+            end
+        end
+        keyEb:HookScript("OnEditFocusLost", CommitHoverRow)
+        spellEb:HookScript("OnEditFocusLost", CommitHoverRow)
+
+        p.hoverRows[i] = { keyEb = keyEb, spellEb = spellEb }
+    end
+
+    -- Show 3 rows by default; "+ 2 more" reveals the last two
+    local hoverMoreBtn = CreateFrame("Button", nil, t3, "UIPanelButtonTemplate")
+    hoverMoreBtn:SetSize(70, 18)
+    hoverMoreBtn:SetPoint("TOPLEFT", padX + 8, -hoverTop - 3 * 24)
+    hoverMoreBtn:SetText("+ 2 more")
+
+    p.UpdateHoverRowVisibility = function()
+        local expanded = p.hoverExpanded
+        for i = 4, 5 do
+            local hk = db.hoverKeys and db.hoverKeys[i]
+            if hk and ((hk.key or "") ~= "" or (hk.spell or "") ~= "") then
+                expanded = true
+            end
+        end
+        for i = 4, 5 do
+            local r = p.hoverRows[i]
+            if expanded then
+                r.keyEb:Show(); r.spellEb:Show()
+            else
+                r.keyEb:Hide(); r.spellEb:Hide()
+            end
+        end
+        if expanded then hoverMoreBtn:Hide() else hoverMoreBtn:Show() end
+    end
+
+    hoverMoreBtn:SetScript("OnClick", function()
+        p.hoverExpanded = true
+        p.UpdateHoverRowVisibility()
+    end)
+    p.UpdateHoverRowVisibility()
+
     -- Import/Export (Advanced)
     local ieHeader = t3:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     ieHeader:SetPoint("BOTTOMLEFT", t3, "BOTTOMLEFT", padX, 30)
@@ -2616,9 +2857,6 @@ local function CreateConfigPanel()
         for _, b in ipairs(db.bindings or {}) do
             parts[#parts + 1] = "b:" .. b.mod .. ":" .. b.btn .. ":" .. (b.spell or "")
         end
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            parts[#parts + 1] = "s:" .. binding.key .. ":" .. (db.spells[binding.key] or "")
-        end
         for i = 1, 4 do
             parts[#parts + 1] = "a:" .. i .. ":" .. (db.buffs[i] or "")
         end
@@ -2638,6 +2876,7 @@ local function CreateConfigPanel()
         if str:sub(1, 4) == "SH2;" or str == "SH2" then
             -- New format: SH2;b:mod:btn:spell;s:KEY:spell;a:slot:buffs
             local newBindings = {}
+            local legacyScroll = {}
             for seg in str:gmatch("[^;]+") do
                 local kind, rest = seg:match("^(%a):(.*)$")
                 if kind == "b" then
@@ -2647,11 +2886,17 @@ local function CreateConfigPanel()
                             { mod = mod or "", btn = tonumber(btn), spell = spell or "" }
                     end
                 elseif kind == "s" then
+                    -- Old exports had separate scroll spells - convert to wheel bindings
                     local key, spell = rest:match("^([%u_]+):(.*)$")
-                    if key then db.spells[key] = spell or "" end
+                    if key then legacyScroll[key] = spell or "" end
                 elseif kind == "a" then
                     local slot, buffs = rest:match("^(%d):(.*)$")
                     if slot then db.buffs[tonumber(slot)] = buffs or "" end
+                end
+            end
+            for _, b in ipairs(BindingsFromLegacySpells(legacyScroll)) do
+                if #newBindings < MAX_CLICK_BINDINGS then
+                    newBindings[#newBindings + 1] = b
                 end
             end
             db.bindings = newBindings
@@ -2682,18 +2927,12 @@ local function CreateConfigPanel()
                 legacySpells[key] = parts[i] or ""
             end
             db.bindings = BindingsFromLegacySpells(legacySpells)
-            for _, binding in ipairs(SCROLL_BINDINGS) do
-                db.spells[binding.key] = legacySpells[binding.key] or ""
-            end
             for s = 1, 4 do
                 db.buffs[s] = parts[numSpells + s] or ""
             end
         end
 
         p.RefreshBindingRows()
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            p.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
-        end
         for s = 1, 4 do
             p.buffBoxes[s]:SetText(db.buffs[s] or "")
         end
@@ -2710,48 +2949,27 @@ local function CreateConfigPanel()
     local saveBtn = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
     saveBtn:SetSize(80, 24)
     saveBtn:SetPoint("BOTTOMLEFT", padX + 20, 14)
-    saveBtn:SetText("Save")
+    saveBtn:SetText("Close")
     saveBtn:SetScript("OnClick", function()
-        p.takeSnapshot()
-        -- Commit any binding spell fields that still have focus
+        -- Everything already applies instantly - just commit any field
+        -- that still has focus, then close
         for i, row in ipairs(p.bindingRows) do
             local b = db.bindings[i]
             if b and row:IsShown() then
                 b.spell = row.eb:GetText() or ""
             end
         end
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            local text = p.editBoxes[binding.key]:GetText()
-            db.spells[binding.key] = (text and text ~= "") and text or ""
-        end
         for slot = 1, 4 do
             local text = p.buffBoxes[slot]:GetText()
             db.buffs[slot] = (text and text ~= "") and text or ""
         end
-        db.specTree = p.selectedSpecTree
-        db.frameW = math.floor(p.wSlider:GetValue())
-        db.frameH = math.floor(p.hSlider:GetValue())
-        db.frameAlpha = math.floor(p.aSlider:GetValue()) / 100
-
-        db.locked = p.cbLock:GetChecked() and true or false
-        if db.locked then container.handle:Hide() else container.handle:Show() end
-
-        db.clickTarget = p.cbTarget:GetChecked() and true or false
-
-        db.hideBlizzFrames = p.cbHideBlizz:GetChecked() and true or false
-        SetBlizzardFrames(not db.hideBlizzFrames)
-
-        db.groupOnly = p.cbGroupOnly:GetChecked() and true or false
 
         p.saveCurrentToProfile()
-        ApplyBindings()
+        if not InCombatLockdown() then ApplyBindings() end
         UpdateCanCastBuffs()
-        UpdateSpecVisibility()
-        Layout()
         SavePosition()
         CloseDropDownMenus()
         p:Hide()
-        print("|cff00ff00SimpleHeal:|r Settings saved!")
 
         -- Warn about spell names not found in the spellbook
         local unknown = {}
@@ -2766,7 +2984,6 @@ local function CreateConfigPanel()
             end
         end
         for _, b in ipairs(db.bindings or {}) do CheckSpell(b.spell) end
-        for _, binding in ipairs(SCROLL_BINDINGS) do CheckSpell(db.spells[binding.key]) end
         if #unknown > 0 then
             print("|cff00ff00SimpleHeal:|r |cffff5555Warning:|r these spells are not in your spellbook (typo or not learned yet): " .. table.concat(unknown, ", "))
         end
@@ -2781,22 +2998,22 @@ local function CreateConfigPanel()
         "Shows 15 fake players so you can preview layout, size, texture and font without being in a group. Click again to exit.")
 
     local resetBtn = CreateFrame("Button", nil, p, "UIPanelButtonTemplate")
-    resetBtn:SetSize(80, 24)
-    resetBtn:SetPoint("BOTTOMRIGHT", -padX - 20, 14)
-    resetBtn:SetText("Reset")
+    resetBtn:SetSize(100, 24)
+    resetBtn:SetPoint("BOTTOMRIGHT", -padX - 10, 14)
+    resetBtn:SetText("Reset spells")
     resetBtn:SetScript("OnClick", function()
         db.bindings = BindingsFromLegacySpells(DEFAULTS.spells)
         p.RefreshBindingRows()
-        for _, binding in ipairs(SCROLL_BINDINGS) do
-            p.editBoxes[binding.key]:SetText(DEFAULTS.spells[binding.key] or "")
-        end
         for slot = 1, 4 do
             p.buffBoxes[slot]:SetText("")
+            db.buffs[slot] = ""
         end
-        p.selectedSpecTree = 0
-        UIDropDownMenu_SetText(specDrop, "Always Show")
+        if not InCombatLockdown() then ApplyBindings() end
+        UpdateCanCastBuffs()
         UIDropDownMenu_SetText(presetDrop, "-- Choose class/spec --")
     end)
+    AddTooltip(resetBtn, "Reset spells",
+        "Resets spell bindings and buff tracking to defaults. Layout and display settings are kept.")
 
     configPanel = p
 end
@@ -2804,9 +3021,6 @@ end
 local function ShowConfig()
     if not configPanel then CreateConfigPanel() end
     configPanel.RefreshBindingRows()
-    for _, binding in ipairs(SCROLL_BINDINGS) do
-        configPanel.editBoxes[binding.key]:SetText(db.spells[binding.key] or "")
-    end
     for slot = 1, 4 do
         configPanel.buffBoxes[slot]:SetText(db.buffs[slot] or "")
     end
@@ -2842,6 +3056,16 @@ local function ShowConfig()
     configPanel.cbRangeFade:SetChecked(db.rangeFade ~= false)
     configPanel.cbMinimap:SetChecked(db.showMinimap ~= false)
     configPanel.cbPetsSep:SetChecked(db.petsSeparate or false)
+    configPanel.cbLowHp:SetChecked(db.lowHpFlash ~= false)
+    configPanel.cbGCD:SetChecked(db.showGCD ~= false)
+    configPanel.rangeEb:SetText(db.rangeSpell or "")
+    configPanel.sSlider:SetValue(db.spacing or 2)
+    for i = 1, 5 do
+        local hk = db.hoverKeys and db.hoverKeys[i]
+        configPanel.hoverRows[i].keyEb:SetText(hk and hk.key or "")
+        configPanel.hoverRows[i].spellEb:SetText(hk and hk.spell or "")
+    end
+    configPanel.UpdateHoverRowVisibility()
     UIDropDownMenu_SetText(configPanel.autoPartyDrop, db.autoProfileParty or "None")
     UIDropDownMenu_SetText(configPanel.autoRaidDrop, db.autoProfileRaid or "None")
     UIDropDownMenu_SetText(configPanel.autoArenaDrop, db.autoProfileArena or "None")
@@ -2927,6 +3151,7 @@ Layout = function()
 
     local fw = db.frameW
     local fh = db.frameH
+    local GAP = db.spacing or GAP
 
     for _, f in pairs(allFrames) do
         f:SetSize(fw, fh)
@@ -3439,6 +3664,7 @@ end)
 
 LayoutTestFrames = function()
     local fw, fh = db.frameW, db.frameH
+    local GAP = db.spacing or GAP
     local petH = math.floor(fh * 0.6)
     local size = db.fontSize or 10
     local barTex = GetBarTexture() or "Interface\\Buttons\\WHITE8X8"
@@ -3918,6 +4144,11 @@ local function Init()
     if cdb.hpTextMode == nil then
         cdb.hpTextMode = cdb.hpPercent and 2 or 1  -- migrate old checkbox
     end
+    if cdb.spacing == nil then cdb.spacing = 2 end
+    if cdb.lowHpFlash == nil then cdb.lowHpFlash = true end
+    if cdb.showGCD == nil then cdb.showGCD = true end
+    if not cdb.hoverKeys then cdb.hoverKeys = {} end
+    if cdb.rangeSpell == nil then cdb.rangeSpell = "" end
     if not cdb.profiles then cdb.profiles = {} end
     if not cdb.activeProfile then cdb.activeProfile = "Default" end
     db = cdb
@@ -3951,6 +4182,22 @@ local function Init()
         db.bindings = BindingsFromLegacySpells(db.spells)
         if #db.bindings == 0 then
             db.bindings = { { mod = "", btn = 1, spell = "" } }
+        end
+        db.scrollMigrated = true  -- legacy map now includes scroll keys
+    end
+
+    -- One-time: move the old fixed scroll-wheel spells into the binding list
+    if not db.scrollMigrated then
+        db.scrollMigrated = true
+        local SCROLL_MAP = {
+            { "SCROLL_UP", "", 6 }, { "SCROLL_DOWN", "", 7 },
+            { "SHIFT_SCROLL_UP", "shift", 6 }, { "SHIFT_SCROLL_DOWN", "shift", 7 },
+        }
+        for _, m in ipairs(SCROLL_MAP) do
+            local sp = db.spells and db.spells[m[1]]
+            if sp and sp ~= "" and #db.bindings < MAX_CLICK_BINDINGS then
+                table.insert(db.bindings, { mod = m[2], btn = m[3], spell = sp })
+            end
         end
     end
 
@@ -4007,6 +4254,7 @@ SafeReg("CHARACTER_POINTS_CHANGED")
 SafeReg("PLAYER_TALENT_UPDATE")
 SafeReg("ACTIVE_TALENT_GROUP_CHANGED")
 SafeReg("PLAYER_TARGET_CHANGED")
+SafeReg("SPELL_UPDATE_COOLDOWN")
 SafeReg("READY_CHECK")
 SafeReg("READY_CHECK_CONFIRM")
 SafeReg("READY_CHECK_FINISHED")
@@ -4031,6 +4279,19 @@ ev:SetScript("OnEvent", function(_, event, arg1)
 
     if event == "PLAYER_LOGOUT" then
         SavePosition()
+        return
+    end
+
+    -- GCD sweep on all visible frames
+    if event == "SPELL_UPDATE_COOLDOWN" then
+        if db.showGCD ~= false and rangeSpellName then
+            local start, dur = GetSpellCooldown(rangeSpellName)
+            if start and dur and dur > 0 and dur <= 1.6 then
+                for _, f in pairs(allFrames) do
+                    if f:IsShown() then f.gcd:SetCooldown(start, dur) end
+                end
+            end
+        end
         return
     end
 

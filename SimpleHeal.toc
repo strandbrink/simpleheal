@@ -2,7 +2,7 @@
 ## Title: SimpleHeal
 ## Notes: Minimalist click-to-heal raid frames
 ## Author: You
-## Version: 1.6.1
+## Version: 1.7.0
 ## SavedVariables: SimpleHealDB
 
 SimpleHeal.lua
