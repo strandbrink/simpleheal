@@ -1,5 +1,9 @@
 # SimpleHeal Changelog
 
+## v1.7.3
+- All client languages supported: presets, defaults and buff tracking now use spell IDs resolved to your client's language (German, Russian, French etc). Previously presets only worked on English clients
+- Fixed: priest preset tracked "Prayer of Divine Spirit" which doesn't exist - correct localized names are now always used
+
 ## v1.7.2
 - Downranking: autocomplete now suggests every rank from your spellbook, e.g. "Healing Wave(Rank 3)". Ranked spells work in click bindings, scroll wheel, hover-cast keys and macros
 - Range fade and GCD tracking now work correctly when the bound spell has a rank suffix

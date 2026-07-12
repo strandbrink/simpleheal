@@ -4,16 +4,34 @@
 
 local ADDON_NAME = "SimpleHeal"
 
+-- Spells are stored as spell IDs and resolved to the client's localized
+-- names via GetSpellInfo, so presets work on non-English clients too.
+local function SpellName(id)
+    if type(id) == "string" then return id end
+    return (GetSpellInfo(id)) or ""
+end
+
+-- { id, id, ... } -> "Name, Name" in the client's language
+local function BuffListString(ids)
+    if type(ids) == "string" then return ids end
+    local names = {}
+    for _, id in ipairs(ids) do
+        local n = GetSpellInfo(id)
+        if n then names[#names + 1] = n end
+    end
+    return table.concat(names, ", ")
+end
+
 local DEFAULTS = {
     spells = {
-        LEFT_CLICK        = "Flash of Light",
-        RIGHT_CLICK       = "Holy Light",
-        SHIFT_LEFT        = "Holy Shock",
-        SHIFT_RIGHT       = "Cleanse",
-        SCROLL_UP         = "Flash of Light",
-        SCROLL_DOWN       = "Holy Light",
-        SHIFT_SCROLL_UP   = "Blessing of Wisdom",
-        SHIFT_SCROLL_DOWN = "Blessing of Kings",
+        LEFT_CLICK        = 19750,  -- Flash of Light
+        RIGHT_CLICK       = 635,    -- Holy Light
+        SHIFT_LEFT        = 20473,  -- Holy Shock
+        SHIFT_RIGHT       = 4987,   -- Cleanse
+        SCROLL_UP         = 19750,  -- Flash of Light
+        SCROLL_DOWN       = 635,    -- Holy Light
+        SHIFT_SCROLL_UP   = 19742,  -- Blessing of Wisdom
+        SHIFT_SCROLL_DOWN = 20217,  -- Blessing of Kings
     },
     buffs = { "", "", "", "" },
     locked   = false,
@@ -67,10 +85,12 @@ local function FindDuplicateBinding(bindings)
 end
 
 -- Build a click-binding list from a table of legacy spell keys
+-- (values can be spell IDs or names; IDs resolve to localized names)
 local function BindingsFromLegacySpells(spells)
     local out = {}
     for _, m in ipairs(LEGACY_KEY_MAP) do
         local sp = spells and spells[m[1]]
+        if sp then sp = SpellName(sp) end
         if sp and sp ~= "" then
             out[#out + 1] = { mod = m[2], btn = m[3], spell = sp }
         end
@@ -93,96 +113,96 @@ local PRESETS = {
     {
         name  = "Resto Druid",
         spells = {
-            LEFT_CLICK        = "Lifebloom",
-            RIGHT_CLICK       = "Rejuvenation",
-            SHIFT_LEFT        = "Regrowth",
-            SHIFT_RIGHT       = "Remove Curse",
-            SCROLL_UP         = "Healing Touch",
-            SCROLL_DOWN       = "Swiftmend",
-            SHIFT_SCROLL_UP   = "Mark of the Wild",
-            SHIFT_SCROLL_DOWN = "Abolish Poison",
+            LEFT_CLICK        = 33763, -- Lifebloom
+            RIGHT_CLICK       = 774,   -- Rejuvenation
+            SHIFT_LEFT        = 8936,  -- Regrowth
+            SHIFT_RIGHT       = 2782,  -- Remove Curse
+            SCROLL_UP         = 5185,  -- Healing Touch
+            SCROLL_DOWN       = 18562, -- Swiftmend
+            SHIFT_SCROLL_UP   = 1126,  -- Mark of the Wild
+            SHIFT_SCROLL_DOWN = 2893,  -- Abolish Poison
         },
         buffs = {
-            "Mark of the Wild, Gift of the Wild",
-            "Thorns",
-            "Power Word: Fortitude, Prayer of Fortitude",
-            "Arcane Intellect, Arcane Brilliance",
+            { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
+            { 467 },                   -- Thorns
+            { 1243, 21562 },           -- PW: Fortitude, Prayer of Fortitude
+            { 1459, 23028 },           -- Arcane Intellect, Arcane Brilliance
         },
     },
     {
         name  = "Holy Paladin",
         spells = {
-            LEFT_CLICK        = "Flash of Light",
-            RIGHT_CLICK       = "Holy Light",
-            SHIFT_LEFT        = "Holy Shock",
-            SHIFT_RIGHT       = "Cleanse",
-            SCROLL_UP         = "Flash of Light",
-            SCROLL_DOWN       = "Holy Light",
-            SHIFT_SCROLL_UP   = "Blessing of Wisdom",
-            SHIFT_SCROLL_DOWN = "Blessing of Kings",
+            LEFT_CLICK        = 19750, -- Flash of Light
+            RIGHT_CLICK       = 635,   -- Holy Light
+            SHIFT_LEFT        = 20473, -- Holy Shock
+            SHIFT_RIGHT       = 4987,  -- Cleanse
+            SCROLL_UP         = 19750, -- Flash of Light
+            SCROLL_DOWN       = 635,   -- Holy Light
+            SHIFT_SCROLL_UP   = 19742, -- Blessing of Wisdom
+            SHIFT_SCROLL_DOWN = 20217, -- Blessing of Kings
         },
         buffs = {
-            "Blessing of Kings, Greater Blessing of Kings",
-            "Blessing of Wisdom, Greater Blessing of Wisdom",
-            "Power Word: Fortitude, Prayer of Fortitude",
-            "Mark of the Wild, Gift of the Wild",
+            { 20217, 25898 },          -- Blessing of Kings, Greater BoK
+            { 19742, 25894 },          -- Blessing of Wisdom, Greater BoW
+            { 1243, 21562 },           -- PW: Fortitude, Prayer of Fortitude
+            { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
         },
     },
     {
         name  = "Holy Priest",
         spells = {
-            LEFT_CLICK        = "Flash Heal",
-            RIGHT_CLICK       = "Greater Heal",
-            SHIFT_LEFT        = "Renew",
-            SHIFT_RIGHT       = "Dispel Magic",
-            SCROLL_UP         = "Prayer of Mending",
-            SCROLL_DOWN       = "Prayer of Healing",
-            SHIFT_SCROLL_UP   = "Power Word: Shield",
-            SHIFT_SCROLL_DOWN = "Abolish Disease",
+            LEFT_CLICK        = 2061,  -- Flash Heal
+            RIGHT_CLICK       = 2060,  -- Greater Heal
+            SHIFT_LEFT        = 139,   -- Renew
+            SHIFT_RIGHT       = 527,   -- Dispel Magic
+            SCROLL_UP         = 33076, -- Prayer of Mending
+            SCROLL_DOWN       = 596,   -- Prayer of Healing
+            SHIFT_SCROLL_UP   = 17,    -- Power Word: Shield
+            SHIFT_SCROLL_DOWN = 552,   -- Abolish Disease
         },
         buffs = {
-            "Power Word: Fortitude, Prayer of Fortitude",
-            "Divine Spirit, Prayer of Divine Spirit",
-            "Shadow Protection, Prayer of Shadow Protection",
-            "Mark of the Wild, Gift of the Wild",
+            { 1243, 21562 },           -- PW: Fortitude, Prayer of Fortitude
+            { 14752, 27681 },          -- Divine Spirit, Prayer of Spirit
+            { 976, 27683 },            -- Shadow Protection, Prayer of Shadow Prot
+            { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
         },
     },
     {
         name  = "Disc Priest",
         spells = {
-            LEFT_CLICK        = "Flash Heal",
-            RIGHT_CLICK       = "Greater Heal",
-            SHIFT_LEFT        = "Power Word: Shield",
-            SHIFT_RIGHT       = "Dispel Magic",
-            SCROLL_UP         = "Renew",
-            SCROLL_DOWN       = "Prayer of Healing",
-            SHIFT_SCROLL_UP   = "Prayer of Mending",
-            SHIFT_SCROLL_DOWN = "Abolish Disease",
+            LEFT_CLICK        = 2061,  -- Flash Heal
+            RIGHT_CLICK       = 2060,  -- Greater Heal
+            SHIFT_LEFT        = 17,    -- Power Word: Shield
+            SHIFT_RIGHT       = 527,   -- Dispel Magic
+            SCROLL_UP         = 139,   -- Renew
+            SCROLL_DOWN       = 596,   -- Prayer of Healing
+            SHIFT_SCROLL_UP   = 33076, -- Prayer of Mending
+            SHIFT_SCROLL_DOWN = 552,   -- Abolish Disease
         },
         buffs = {
-            "Power Word: Fortitude, Prayer of Fortitude",
-            "Divine Spirit, Prayer of Divine Spirit",
-            "Shadow Protection, Prayer of Shadow Protection",
-            "Mark of the Wild, Gift of the Wild",
+            { 1243, 21562 },           -- PW: Fortitude, Prayer of Fortitude
+            { 14752, 27681 },          -- Divine Spirit, Prayer of Spirit
+            { 976, 27683 },            -- Shadow Protection, Prayer of Shadow Prot
+            { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
         },
     },
     {
         name  = "Resto Shaman",
         spells = {
-            LEFT_CLICK        = "Lesser Healing Wave",
-            RIGHT_CLICK       = "Healing Wave",
-            SHIFT_LEFT        = "Chain Heal",
-            SHIFT_RIGHT       = "Cure Disease",
-            SCROLL_UP         = "Earth Shield",
-            SCROLL_DOWN       = "Chain Heal",
-            SHIFT_SCROLL_UP   = "Cure Poison",
-            SHIFT_SCROLL_DOWN = "Water Shield",
+            LEFT_CLICK        = 8004,  -- Lesser Healing Wave
+            RIGHT_CLICK       = 331,   -- Healing Wave
+            SHIFT_LEFT        = 1064,  -- Chain Heal
+            SHIFT_RIGHT       = 2870,  -- Cure Disease
+            SCROLL_UP         = 974,   -- Earth Shield
+            SCROLL_DOWN       = 1064,  -- Chain Heal
+            SHIFT_SCROLL_UP   = 526,   -- Cure Poison
+            SHIFT_SCROLL_DOWN = 24398, -- Water Shield
         },
         buffs = {
-            "Earth Shield",
-            "Power Word: Fortitude, Prayer of Fortitude",
-            "Mark of the Wild, Gift of the Wild",
-            "Arcane Intellect, Arcane Brilliance",
+            { 974 },                   -- Earth Shield
+            { 1243, 21562 },           -- PW: Fortitude, Prayer of Fortitude
+            { 1126, 21849 },           -- Mark of the Wild, Gift of the Wild
+            { 1459, 23028 },           -- Arcane Intellect, Arcane Brilliance
         },
     },
 }
@@ -989,8 +1009,9 @@ local function Refresh(f)
 
     -- Missing Thorns text for tanks
     if f.thornsText then
-        if GetUnitRole(unit) == "TANK" and KnownSpell("Thorns")
-            and not scratchBuffs["Thorns"] and not isDead and not isOffline then
+        local thornsName = SpellName(467)  -- Thorns, localized
+        if GetUnitRole(unit) == "TANK" and thornsName ~= "" and KnownSpell(thornsName)
+            and not scratchBuffs[thornsName] and not isDead and not isOffline then
             f.thornsText:Show()
         else
             f.thornsText:Hide()
@@ -1806,7 +1827,8 @@ local function CreateConfigPanel()
         p.takeSnapshot()
         db.bindings = BindingsFromLegacySpells(preset.spells)
         for slot = 1, 4 do
-            local b = preset.buffs and preset.buffs[slot] or ""
+            local b = preset.buffs and preset.buffs[slot]
+            b = b and BuffListString(b) or ""
             p.buffBoxes[slot]:SetText(b)
             db.buffs[slot] = b
         end
@@ -4164,7 +4186,7 @@ local function Init()
     if not cdb.spells then cdb.spells = {} end
     for k, v in pairs(DEFAULTS.spells) do
         if cdb.spells[k] == nil then
-            cdb.spells[k] = v
+            cdb.spells[k] = SpellName(v)
         end
     end
     if not cdb.buffs then cdb.buffs = {} end
@@ -4223,8 +4245,10 @@ local function Init()
         if presetName then
             for _, p in ipairs(PRESETS) do
                 if p.name == presetName then
-                    for k, v in pairs(p.spells) do db.spells[k] = v end
-                    for i = 1, 4 do db.buffs[i] = p.buffs[i] or "" end
+                    for k, v in pairs(p.spells) do db.spells[k] = SpellName(v) end
+                    for i = 1, 4 do
+                        db.buffs[i] = p.buffs[i] and BuffListString(p.buffs[i]) or ""
+                    end
                     break
                 end
             end
