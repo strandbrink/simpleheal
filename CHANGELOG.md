@@ -1,5 +1,16 @@
 # SimpleHeal Changelog
 
+## v1.8.0
+- Dispel sound (opt-in): a short chime when someone gains a debuff you can dispel
+- OOM indicator: blue line at the bottom of frames when you can't afford your main heal
+- HP color scale (opt-in): health text shifts green > yellow > red as health drops
+- Cast flash: brief white blink on a frame when you cast on it (toggleable)
+- Fade when idle (opt-in): the whole addon dims to 40% when everyone is full and you're out of combat
+- Binding cheat-sheet: hover the drag handle to see all your current bindings
+- Hover-cast key capture: click "Set" and press the key combo instead of typing it
+- Duplicate bindings are now highlighted in red directly on the conflicting rows
+- SimpleHeal now appears under ESC > Options > AddOns with a shortcut to the settings
+
 ## v1.7.3
 - All client languages supported: presets, defaults and buff tracking now use spell IDs resolved to your client's language (German, Russian, French etc). Previously presets only worked on English clients
 - Fixed: priest preset tracked "Prayer of Divine Spirit" which doesn't exist - correct localized names are now always used

@@ -65,7 +65,8 @@ local LEGACY_KEY_MAP = {
     { "SHIFT_SCROLL_DOWN", "shift", 7 },
 }
 
--- Returns "Shift + Left, Ctrl + Right" listing every modifier+button combo used twice, or nil
+-- Returns "Shift + Left, Ctrl + Right" listing every modifier+button combo used
+-- twice (or nil), plus a set of the duplicated combo keys ("mod:btn")
 local function FindDuplicateBinding(bindings)
     local seen, dups, added = {}, {}, {}
     for _, b in ipairs(bindings or {}) do
@@ -79,9 +80,9 @@ local function FindDuplicateBinding(bindings)
         end
     end
     if #dups > 0 then
-        return table.concat(dups, ", ")
+        return table.concat(dups, ", "), added
     end
-    return nil
+    return nil, added
 end
 
 -- Build a click-binding list from a table of legacy spell keys
@@ -226,6 +227,7 @@ local scratchBuffs = {}     -- reusable per-Refresh buff name set
 local rangeSpellName        -- spell used for range fading, set by ApplyBindings
 local lastClickedFrame      -- last frame the player cast from (for the GCD sweep)
 local mouseOverFrame = false -- suppress tooltips while hovering a unit frame
+local lastDispelSound = 0    -- throttle for the dispellable-debuff sound
 
 -- Map player class to a default preset
 local CLASS_PRESET = {
@@ -768,7 +770,8 @@ local function Refresh(f)
         local hpMode = db.hpTextMode or 1
         local diff = hp - hpMax
         if diff < 0 then
-            local pct = hpMax > 0 and math.floor(hp / hpMax * 100 + 0.5) or 0
+            local frac = hpMax > 0 and hp / hpMax or 0
+            local pct = math.floor(frac * 100 + 0.5)
             if hpMode == 2 then
                 f.deficit:SetText(pct .. "%")
             elseif hpMode == 3 then
@@ -776,7 +779,16 @@ local function Refresh(f)
             else
                 f.deficit:SetText(diff)
             end
-            f.deficit:SetTextColor(1, 1, 1)
+            if db.hpColorScale then
+                -- green -> yellow -> red as health drops
+                if frac > 0.5 then
+                    f.deficit:SetTextColor((1 - frac) * 2, 1, 0.2)
+                else
+                    f.deficit:SetTextColor(1, frac * 2, 0.2)
+                end
+            else
+                f.deficit:SetTextColor(1, 1, 1)
+            end
         else
             f.deficit:SetText("")
         end
@@ -850,6 +862,18 @@ local function Refresh(f)
             end
         end
     end
+    -- Sound when a dispellable debuff first appears (throttled)
+    if debuffColor and not f.hadDispellable then
+        f.hadDispellable = true
+        if db.dispelSound and GetTime() - lastDispelSound > 2 then
+            lastDispelSound = GetTime()
+            -- Alarm clock ding - short, distinct, easy to hear in combat
+            PlaySound(SOUNDKIT and SOUNDKIT.ALARM_CLOCK_WARNING_3 or 12889, "Master")
+        end
+    elseif not debuffColor then
+        f.hadDispellable = false
+    end
+
     if debuffColor then
         -- Stacks + remaining time next to the debuff icon
         if debuffCount and debuffCount > 1 then
@@ -1422,6 +1446,16 @@ local function MakeFrame(unit, parent)
     aggroBorder:Hide()
     f.aggroBorder = aggroBorder
 
+    -- Out-of-mana indicator (blue line on bottom edge, shown when the player
+    -- cannot afford the range-check spell)
+    local oomLine = f:CreateTexture(nil, "OVERLAY")
+    oomLine:SetPoint("BOTTOMLEFT", -1, -1)
+    oomLine:SetPoint("BOTTOMRIGHT", 1, -1)
+    oomLine:SetHeight(2)
+    oomLine:SetColorTexture(0.2, 0.5, 1, 0.9)
+    oomLine:Hide()
+    f.oomLine = oomLine
+
     -- Out-of-combat icon (small green dot)
     local oocIcon = f:CreateTexture(nil, "OVERLAY")
     oocIcon:SetSize(8, 8)
@@ -1598,10 +1632,38 @@ local function MakeFrame(unit, parent)
     sd:SetAttribute("unit", unit)
     f.scrollDown = sd
 
+    -- Cast confirmation flash (brief white blink on the clicked frame)
+    local flash = f:CreateTexture(nil, "OVERLAY")
+    flash:SetPoint("TOPLEFT", 1, -1)
+    flash:SetPoint("BOTTOMRIGHT", -1, 1)
+    flash:SetColorTexture(1, 1, 1, 0.4)
+    flash:Hide()
+    local flashAnim = flash:CreateAnimationGroup()
+    local flashFade = flashAnim:CreateAnimation("Alpha")
+    flashFade:SetFromAlpha(1)
+    flashFade:SetToAlpha(0)
+    flashFade:SetDuration(0.3)
+    flashAnim:SetScript("OnFinished", function() flash:Hide() end)
+    f.PlayClickFlash = function()
+        if db.clickFlash == false then return end
+        flashAnim:Stop()
+        flash:Show()
+        flashAnim:Play()
+    end
+
     -- Track the last frame the player cast from (GCD sweep shows only there)
-    f:SetScript("PostClick", function(self) lastClickedFrame = self end)
-    su:SetScript("PostClick", function() lastClickedFrame = f end)
-    sd:SetScript("PostClick", function() lastClickedFrame = f end)
+    f:SetScript("PostClick", function(self)
+        lastClickedFrame = self
+        self.PlayClickFlash()
+    end)
+    su:SetScript("PostClick", function()
+        lastClickedFrame = f
+        f.PlayClickFlash()
+    end)
+    sd:SetScript("PostClick", function()
+        lastClickedFrame = f
+        f.PlayClickFlash()
+    end)
 
     -- Suppress tooltips (incl. from tooltip addons) while hovering the frame
     f:HookScript("OnEnter", function()
@@ -2129,6 +2191,13 @@ local function CreateConfigPanel()
             if not InCombatLockdown() then ApplyBindings() end
         end)
 
+        -- Red tint shown when this row's modifier+button collides with another row
+        local dupMark = row:CreateTexture(nil, "BACKGROUND")
+        dupMark:SetAllPoints()
+        dupMark:SetColorTexture(1, 0.1, 0.1, 0.25)
+        dupMark:Hide()
+        row.dupMark = dupMark
+
         row.modBtn, row.btnBtn, row.eb = modBtn, btnBtn, eb
         row:Hide()
         p.bindingRows[i] = row
@@ -2157,12 +2226,23 @@ local function CreateConfigPanel()
     dupWarning:Hide()
 
     p.UpdateDupWarning = function()
-        local dup = FindDuplicateBinding(db.bindings)
+        local dup, dupKeys = FindDuplicateBinding(db.bindings)
         if dup then
             dupWarning:SetText("Duplicate: " .. dup .. "!")
             dupWarning:Show()
         else
             dupWarning:Hide()
+        end
+        -- Tint every row that is part of a collision
+        for i = 1, MAX_CLICK_BINDINGS do
+            local row = p.bindingRows[i]
+            local b = db.bindings[i]
+            if b and row:IsShown() and b.spell and b.spell ~= ""
+                and dupKeys[(b.mod or "") .. ":" .. (b.btn or 0)] then
+                row.dupMark:Show()
+            else
+                row.dupMark:Hide()
+            end
         end
     end
 
@@ -2671,6 +2751,49 @@ local function CreateConfigPanel()
     p.cbGCD = cbGCD
     AddTooltip(cbGCD, "GCD indicator", "Small cooldown swirl in the corner of each frame while your global cooldown is running.")
 
+    local cbHpColor = MakeCheckbox(t2, "HP color scale", padX + 170, cbTop - 136)
+    cbHpColor:SetChecked(db.hpColorScale or false)
+    cbHpColor:SetScript("OnClick", function(self)
+        db.hpColorScale = self:GetChecked() and true or false
+        RefreshAll()
+        if testModeActive and not InCombatLockdown() then Layout() end
+    end)
+    p.cbHpColor = cbHpColor
+    AddTooltip(cbHpColor, "HP color scale", "Colors the health text green > yellow > red as health drops.")
+
+    local cbClickFlash = MakeCheckbox(t2, "Cast flash", padX + 170, cbTop - 158)
+    cbClickFlash:SetChecked(db.clickFlash ~= false)
+    cbClickFlash:SetScript("OnClick", function(self)
+        db.clickFlash = self:GetChecked() and true or false
+    end)
+    p.cbClickFlash = cbClickFlash
+    AddTooltip(cbClickFlash, "Cast flash", "Brief white blink on a frame when you cast on it - confirms the click registered.")
+
+    local cbIdleFade = MakeCheckbox(t2, "Fade when idle", padX, cbTop - 180)
+    cbIdleFade:SetChecked(db.idleFade or false)
+    cbIdleFade:SetScript("OnClick", function(self)
+        db.idleFade = self:GetChecked() and true or false
+        if container and not db.idleFade then container:SetAlpha(1) end
+    end)
+    p.cbIdleFade = cbIdleFade
+    AddTooltip(cbIdleFade, "Fade when idle", "Dims the whole addon to 40% when everyone is at full health and you are out of combat.")
+
+    local cbDispelSound = MakeCheckbox(t2, "Dispel sound", padX + 170, cbTop - 180)
+    cbDispelSound:SetChecked(db.dispelSound or false)
+    cbDispelSound:SetScript("OnClick", function(self)
+        db.dispelSound = self:GetChecked() and true or false
+    end)
+    p.cbDispelSound = cbDispelSound
+    AddTooltip(cbDispelSound, "Dispel sound", "Plays a soft chime when someone gains a debuff you can dispel.")
+
+    local cbOOM = MakeCheckbox(t2, "OOM indicator", padX, cbTop - 202)
+    cbOOM:SetChecked(db.oomIndicator ~= false)
+    cbOOM:SetScript("OnClick", function(self)
+        db.oomIndicator = self:GetChecked() and true or false
+    end)
+    p.cbOOM = cbOOM
+    AddTooltip(cbOOM, "OOM indicator", "Blue line at the bottom of frames when you don't have enough mana for your main heal.")
+
     ------------------------------------------------
     -- TAB 3: Advanced - behavior options
     ------------------------------------------------
@@ -2773,6 +2896,15 @@ local function CreateConfigPanel()
     AddTooltip(cbHideTooltip, "Hide tooltips over frames",
         "Suppresses unit tooltips (including from tooltip addons) while your mouse is over a SimpleHeal frame, so they never cover the frames.")
 
+    local cbHandleTip = MakeCheckbox(t3, "Binding list on hover", padX + 170, advTop - 26)
+    cbHandleTip:SetChecked(db.handleTooltip ~= false)
+    cbHandleTip:SetScript("OnClick", function(self)
+        db.handleTooltip = self:GetChecked() and true or false
+    end)
+    p.cbHandleTip = cbHandleTip
+    AddTooltip(cbHandleTip, "Binding list on hover",
+        "Shows your current bindings in a tooltip when hovering the SimpleHeal drag handle.")
+
     local cbMinimap = MakeCheckbox(t3, "Minimap button", padX, advTop - 136)
     cbMinimap:SetChecked(db.showMinimap ~= false)
     cbMinimap:SetScript("OnClick", function(self)
@@ -2843,16 +2975,61 @@ local function CreateConfigPanel()
         local y = -hoverTop - (i - 1) * 24
 
         local keyEb = CreateFrame("EditBox", "SimpleHealHoverKey" .. i, t3, "InputBoxTemplate")
-        keyEb:SetSize(70, 20)
+        keyEb:SetSize(64, 20)
         keyEb:SetPoint("TOPLEFT", padX + 8, y)
         keyEb:SetAutoFocus(false)
-        keyEb:SetMaxLetters(20)
+        keyEb:SetMaxLetters(24)
         keyEb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         keyEb:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
+        -- Key-capture button: click, then press the key combo you want
+        local capBtn = CreateFrame("Button", nil, t3, "UIPanelButtonTemplate")
+        capBtn:SetSize(36, 20)
+        capBtn:SetPoint("LEFT", keyEb, "RIGHT", 2, 0)
+        capBtn:SetText("Set")
+
+        local function StopCapture()
+            capBtn:EnableKeyboard(false)
+            capBtn:SetScript("OnKeyDown", nil)
+            capBtn:SetText("Set")
+        end
+
+        capBtn:SetScript("OnClick", function(self)
+            self:SetText("...")
+            self:EnableKeyboard(true)
+            self:SetPropagateKeyboardInput(false)
+            self:SetScript("OnKeyDown", function(_, key)
+                if key == "ESCAPE" then
+                    StopCapture()
+                    return
+                end
+                -- Wait for a real key if only a modifier was pressed
+                if key:find("SHIFT") or key:find("CTRL") or key:find("ALT") then
+                    return
+                end
+                local combo = ""
+                if IsAltKeyDown() then combo = "ALT-" end
+                if IsControlKeyDown() then combo = combo .. "CTRL-" end
+                if IsShiftKeyDown() then combo = combo .. "SHIFT-" end
+                combo = combo .. key
+                keyEb:SetText(combo)
+                StopCapture()
+                -- Commit directly
+                if not db.hoverKeys then db.hoverKeys = {} end
+                db.hoverKeys[i] = db.hoverKeys[i] or { key = "", spell = "" }
+                db.hoverKeys[i].key = combo
+                if InCombatLockdown() then
+                    pendingApply = true
+                else
+                    ApplyBindings()
+                end
+            end)
+        end)
+        AddTooltip(capBtn, "Capture key", "Click, then press the key (with any modifiers) you want to bind.")
+
         local spellEb = CreateFrame("EditBox", "SimpleHealHoverSpell" .. i, t3, "InputBoxTemplate")
-        spellEb:SetSize(190, 20)
-        spellEb:SetPoint("LEFT", keyEb, "RIGHT", 8, 0)
+        spellEb:SetSize(150, 20)
+        spellEb:SetPoint("LEFT", capBtn, "RIGHT", 8, 0)
         spellEb:SetAutoFocus(false)
         spellEb:SetMaxLetters(255)
         spellEb:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
@@ -2876,7 +3053,7 @@ local function CreateConfigPanel()
         keyEb:HookScript("OnEditFocusLost", CommitHoverRow)
         spellEb:HookScript("OnEditFocusLost", CommitHoverRow)
 
-        p.hoverRows[i] = { keyEb = keyEb, spellEb = spellEb }
+        p.hoverRows[i] = { keyEb = keyEb, spellEb = spellEb, capBtn = capBtn }
     end
 
     -- Show 3 rows by default; "+ 2 more" reveals the last two
@@ -2896,9 +3073,9 @@ local function CreateConfigPanel()
         for i = 4, 5 do
             local r = p.hoverRows[i]
             if expanded then
-                r.keyEb:Show(); r.spellEb:Show()
+                r.keyEb:Show(); r.spellEb:Show(); r.capBtn:Show()
             else
-                r.keyEb:Hide(); r.spellEb:Hide()
+                r.keyEb:Hide(); r.spellEb:Hide(); r.capBtn:Hide()
             end
         end
         if expanded then hoverMoreBtn:Hide() else hoverMoreBtn:Show() end
@@ -3143,6 +3320,12 @@ local function ShowConfig()
     configPanel.cbGCD:SetChecked(db.showGCD ~= false)
     configPanel.rangeEb:SetText(db.rangeSpell or "")
     configPanel.cbHideTooltip:SetChecked(db.hideTooltip ~= false)
+    configPanel.cbHpColor:SetChecked(db.hpColorScale or false)
+    configPanel.cbClickFlash:SetChecked(db.clickFlash ~= false)
+    configPanel.cbIdleFade:SetChecked(db.idleFade or false)
+    configPanel.cbHandleTip:SetChecked(db.handleTooltip ~= false)
+    configPanel.cbDispelSound:SetChecked(db.dispelSound or false)
+    configPanel.cbOOM:SetChecked(db.oomIndicator ~= false)
     configPanel.sSlider:SetValue(db.spacing or 2)
     for i = 1, 5 do
         local hk = db.hoverKeys and db.hoverKeys[i]
@@ -3197,6 +3380,33 @@ local function CreateContainer()
         container:StopMovingOrSizing()
         if btn == "RightButton" then ShowConfig() end
     end)
+
+    -- Binding cheat-sheet on hover
+    handle:SetScript("OnEnter", function(self)
+        if db.handleTooltip == false then return end
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("SimpleHeal")
+        for _, b in ipairs(db.bindings or {}) do
+            if b.spell and b.spell ~= "" then
+                local combo = (b.mod ~= "" and (MOD_LABELS[b.mod] .. " + ") or "")
+                    .. (BTN_LABELS[b.btn] or "?")
+                local action = b.spell
+                if action:sub(1, 1) == "/" then action = "(macro)" end
+                GameTooltip:AddDoubleLine(combo, action, 1, 0.82, 0, 1, 1, 1)
+            end
+        end
+        for _, hk in ipairs(db.hoverKeys or {}) do
+            if hk.key and hk.key ~= "" and hk.spell and hk.spell ~= "" then
+                local action = hk.spell
+                if action:sub(1, 1) == "/" then action = "(macro)" end
+                GameTooltip:AddDoubleLine(hk.key .. " (hover)", action, 0.5, 0.8, 1, 1, 1, 1)
+            end
+        end
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Right-click: settings  |  Drag: move", 0.6, 0.6, 0.6)
+        GameTooltip:Show()
+    end)
+    handle:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     -- Role group labels
     container.roleLabels = {}
@@ -3586,7 +3796,8 @@ local function UpdateTestDeficit(f)
     local hp = f.testHP
     local diff = math.floor(hp - TEST_MAX_HP)
     if diff < 0 then
-        local pct = math.floor(hp / TEST_MAX_HP * 100 + 0.5)
+        local frac = hp / TEST_MAX_HP
+        local pct = math.floor(frac * 100 + 0.5)
         local hpMode = db.hpTextMode or 1
         if hpMode == 2 then
             f.deficit:SetText(pct .. "%")
@@ -3595,7 +3806,15 @@ local function UpdateTestDeficit(f)
         else
             f.deficit:SetText(diff)
         end
-        f.deficit:SetTextColor(1, 1, 1)
+        if db.hpColorScale then
+            if frac > 0.5 then
+                f.deficit:SetTextColor((1 - frac) * 2, 1, 0.2)
+            else
+                f.deficit:SetTextColor(1, frac * 2, 0.2)
+            end
+        else
+            f.deficit:SetTextColor(1, 1, 1)
+        end
     else
         f.deficit:SetText("")
     end
@@ -4234,6 +4453,12 @@ local function Init()
     if not cdb.hoverKeys then cdb.hoverKeys = {} end
     if cdb.rangeSpell == nil then cdb.rangeSpell = "" end
     if cdb.hideTooltip == nil then cdb.hideTooltip = true end
+    if cdb.hpColorScale == nil then cdb.hpColorScale = false end
+    if cdb.clickFlash == nil then cdb.clickFlash = true end
+    if cdb.idleFade == nil then cdb.idleFade = false end
+    if cdb.handleTooltip == nil then cdb.handleTooltip = true end
+    if cdb.dispelSound == nil then cdb.dispelSound = false end
+    if cdb.oomIndicator == nil then cdb.oomIndicator = true end
     if not cdb.profiles then cdb.profiles = {} end
     if not cdb.activeProfile then cdb.activeProfile = "Default" end
     db = cdb
@@ -4320,6 +4545,49 @@ local function Init()
 end
 
 ----------------------------------------------
+-- Blizzard Interface Options entry (discoverability)
+----------------------------------------------
+local function RegisterBlizzOptions()
+    local panel = CreateFrame("Frame")
+    panel.name = "SimpleHeal"
+
+    local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    title:SetPoint("TOPLEFT", 16, -16)
+    title:SetText("SimpleHeal")
+
+    local desc = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    desc:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -8)
+    desc:SetPoint("RIGHT", -32, 0)
+    desc:SetJustifyH("LEFT")
+    desc:SetText("Click-to-heal raid frames. All settings live in SimpleHeal's own panel - open it with the button below, the minimap button, or /sh.")
+
+    local openBtn = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+    openBtn:SetSize(180, 24)
+    openBtn:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -16)
+    openBtn:SetText("Open SimpleHeal settings")
+    openBtn:SetScript("OnClick", function()
+        if SettingsPanel and SettingsPanel:IsShown() then
+            HideUIPanel(SettingsPanel)
+        elseif InterfaceOptionsFrame and InterfaceOptionsFrame:IsShown() then
+            InterfaceOptionsFrame:Hide()
+        end
+        ShowConfig()
+    end)
+
+    local cmds = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cmds:SetPoint("TOPLEFT", openBtn, "BOTTOMLEFT", 0, -16)
+    cmds:SetJustifyH("LEFT")
+    cmds:SetText("/sh - settings   |   /sh test - preview frames   |   /sh lock - lock position\n/sh copy <name> - copy settings from another character")
+
+    if Settings and Settings.RegisterCanvasLayoutCategory then
+        local category = Settings.RegisterCanvasLayoutCategory(panel, "SimpleHeal")
+        Settings.RegisterAddOnCategory(category)
+    elseif InterfaceOptions_AddCategory then
+        InterfaceOptions_AddCategory(panel)
+    end
+end
+
+----------------------------------------------
 -- Tooltip suppression while hovering unit frames
 ----------------------------------------------
 GameTooltip:HookScript("OnShow", function(self)
@@ -4367,6 +4635,7 @@ local UNIT_EVENTS = {
 ev:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         Init()
+        pcall(RegisterBlizzOptions)
         print("|cff00ff00SimpleHeal|r loaded - |cff88ff88/sh|r for settings")
         return
     end
@@ -4476,6 +4745,48 @@ ev:SetScript("OnUpdate", function(_, dt)
     elapsed = 0
     for _, f in pairs(allFrames) do
         if f:IsShown() then Refresh(f) end
+    end
+
+    -- OOM indicator: blue bottom line on all frames when the player cannot
+    -- afford the range-check spell
+    local oom = false
+    if db.oomIndicator ~= false and rangeSpellName and GetSpellPowerCost then
+        local costs = GetSpellPowerCost(rangeSpellName)
+        if costs then
+            for _, c in ipairs(costs) do
+                if c.type == 0 then  -- mana
+                    oom = UnitPower("player", 0) < c.cost
+                    break
+                end
+            end
+        end
+    end
+    for _, f in pairs(allFrames) do
+        if f.oomLine then
+            if oom and f:IsShown() then f.oomLine:Show() else f.oomLine:Hide() end
+        end
+    end
+
+    -- Idle fade: dim the whole addon when nobody needs attention
+    if container then
+        local alpha = 1
+        if db.idleFade and not testModeActive and not UnitAffectingCombat("player") then
+            local idle = true
+            for _, f in pairs(allFrames) do
+                if f:IsShown() then
+                    local u = f.unit
+                    if UnitExists(u) and UnitIsConnected(u)
+                        and (UnitIsDeadOrGhost(u) or UnitHealth(u) < UnitHealthMax(u)) then
+                        idle = false
+                        break
+                    end
+                end
+            end
+            if idle then alpha = 0.4 end
+        end
+        if container:GetAlpha() ~= alpha then
+            container:SetAlpha(alpha)
+        end
     end
 end)
 
