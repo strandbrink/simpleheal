@@ -1,5 +1,9 @@
 # SimpleHeal Changelog
 
+## v1.8.1
+- Roles now come only from what players set themselves: LFG role and raid Main Tank/Main Assist assignments. No more class guessing (all warriors showed as tanks, all hybrids as healers)
+- New opt-in "Auto-detect roles" (Advanced): guesses roles from forms and auras (bear/cat form, Shadowform, Moonkin, Righteous Fury) for players without an assigned role
+
 ## v1.8.0
 - Dispel sound (opt-in): a short chime when someone gains a debuff you can dispel
 - OOM indicator: blue line at the bottom of frames when you can't afford your main heal

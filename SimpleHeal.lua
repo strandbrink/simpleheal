@@ -541,22 +541,66 @@ local function UpdateSpecVisibility()
     end
 end
 
--- Role detection for grouping
+-- Role detection for grouping.
+-- Priority: LFG-assigned role > raid MT/MA assignment > aura/form detection
+-- (cached from each unit's buff scan) > class guess.
 local HEALER_CLASSES = { PRIEST = true, SHAMAN = true, PALADIN = true, DRUID = true }
-local TANK_CLASSES   = { WARRIOR = true }
+
+local SHADOWFORM_NAME = SpellName(15473)  -- Shadowform
+local MOONKIN_NAME    = SpellName(24858)  -- Moonkin Form
+local RFURY_NAME      = SpellName(25780)  -- Righteous Fury
+
+local roleCache = {}  -- [unit] = detected role, updated by Refresh's aura scan
+local roleDirty = false  -- set when a detected role changes; ticker re-layouts
+
+-- Called from Refresh with the unit's current buff-name set
+local function DetectRole(unit, buffSet)
+    local _, cls = UnitClass(unit)
+    local detected
+    if cls == "DRUID" then
+        local pt = UnitPowerType(unit)
+        if pt == 1 then                       -- rage = bear
+            detected = "TANK"
+        elseif pt == 3 then                   -- energy = cat
+            detected = "DAMAGER"
+        elseif buffSet[MOONKIN_NAME] then
+            detected = "DAMAGER"
+        else
+            detected = "HEALER"
+        end
+    elseif cls == "PRIEST" then
+        detected = buffSet[SHADOWFORM_NAME] and "DAMAGER" or "HEALER"
+    elseif cls == "PALADIN" then
+        detected = buffSet[RFURY_NAME] and "TANK" or "HEALER"
+    elseif cls == "SHAMAN" then
+        detected = "HEALER"
+    else
+        detected = "DAMAGER"  -- warriors tank via MT assignment, not by class
+    end
+    if roleCache[unit] ~= detected then
+        roleCache[unit] = detected
+        roleDirty = true
+    end
+end
 
 local function GetUnitRole(unit)
-    -- Only trust explicit tank/healer assignments. Battlegrounds auto-assign
-    -- everyone "DAMAGER", which would hide role icons for healers - fall back
-    -- to the class guess in that case, same as when no role is assigned.
+    -- Roles people set themselves: LFG role assignment...
     if UnitGroupRolesAssigned then
         local role = UnitGroupRolesAssigned(unit)
         if role == "TANK" or role == "HEALER" then return role end
     end
-    local _, cls = UnitClass(unit)
-    if not cls then return "DAMAGER" end
-    if TANK_CLASSES[cls] then return "TANK" end
-    if HEALER_CLASSES[cls] then return "HEALER" end
+    -- ...and raid main tank / main assist assignments
+    if GetPartyAssignment then
+        if GetPartyAssignment("MAINTANK", unit) then return "TANK" end
+        if GetPartyAssignment("MAINASSIST", unit) then return "DAMAGER" end
+    end
+    -- Optional auto-detection (forms/auras/class) - off by default
+    if db and db.autoDetectRoles then
+        local cached = roleCache[unit]
+        if cached then return cached end
+        local _, cls = UnitClass(unit)
+        if cls and HEALER_CLASSES[cls] then return "HEALER" end
+    end
     return "DAMAGER"
 end
 
@@ -997,6 +1041,11 @@ local function Refresh(f)
     end
     for h = hotIdx + 1, 6 do
         f.hots[h]:Hide()
+    end
+
+    -- Update role detection from the fresh buff data (bear form, shadowform etc)
+    if not isDead and not isOffline then
+        DetectRole(unit, scratchBuffs)
     end
 
     -- Buff indicators: gray = missing, orange = expires in under 2 minutes
@@ -2905,6 +2954,16 @@ local function CreateConfigPanel()
     AddTooltip(cbHandleTip, "Binding list on hover",
         "Shows your current bindings in a tooltip when hovering the SimpleHeal drag handle.")
 
+    local cbAutoRoles = MakeCheckbox(t3, "Auto-detect roles", padX + 170, advTop - 48)
+    cbAutoRoles:SetChecked(db.autoDetectRoles or false)
+    cbAutoRoles:SetScript("OnClick", function(self)
+        db.autoDetectRoles = self:GetChecked() and true or false
+        if not InCombatLockdown() then Layout() end
+    end)
+    p.cbAutoRoles = cbAutoRoles
+    AddTooltip(cbAutoRoles, "Auto-detect roles",
+        "Guess roles from forms and auras (bear form, Shadowform, Righteous Fury...) for players without an assigned role. Off = only LFG roles and Main Tank/Main Assist assignments count.")
+
     local cbMinimap = MakeCheckbox(t3, "Minimap button", padX, advTop - 136)
     cbMinimap:SetChecked(db.showMinimap ~= false)
     cbMinimap:SetScript("OnClick", function(self)
@@ -3326,6 +3385,7 @@ local function ShowConfig()
     configPanel.cbHandleTip:SetChecked(db.handleTooltip ~= false)
     configPanel.cbDispelSound:SetChecked(db.dispelSound or false)
     configPanel.cbOOM:SetChecked(db.oomIndicator ~= false)
+    configPanel.cbAutoRoles:SetChecked(db.autoDetectRoles or false)
     configPanel.sSlider:SetValue(db.spacing or 2)
     for i = 1, 5 do
         local hk = db.hoverKeys and db.hoverKeys[i]
@@ -4459,6 +4519,7 @@ local function Init()
     if cdb.handleTooltip == nil then cdb.handleTooltip = true end
     if cdb.dispelSound == nil then cdb.dispelSound = false end
     if cdb.oomIndicator == nil then cdb.oomIndicator = true end
+    if cdb.autoDetectRoles == nil then cdb.autoDetectRoles = false end
     if not cdb.profiles then cdb.profiles = {} end
     if not cdb.activeProfile then cdb.activeProfile = "Default" end
     db = cdb
@@ -4697,6 +4758,7 @@ ev:SetScript("OnEvent", function(_, event, arg1)
         or event == "GROUP_ROSTER_UPDATE"
         or event == "PARTY_MEMBERS_CHANGED"
         or event == "RAID_ROSTER_UPDATE" then
+        wipe(roleCache)  -- unit tokens may now point at different players
         AutoSwitchProfile()
         Layout()
         -- Blizzard frames re-show themselves on roster changes
@@ -4745,6 +4807,15 @@ ev:SetScript("OnUpdate", function(_, dt)
     elapsed = 0
     for _, f in pairs(allFrames) do
         if f:IsShown() then Refresh(f) end
+    end
+
+    -- Re-layout role groups when someone's detected role changed (e.g. druid
+    -- shifted to bear form)
+    if roleDirty then
+        roleDirty = false
+        if db.autoDetectRoles and not InCombatLockdown() and not testModeActive then
+            Layout()
+        end
     end
 
     -- OOM indicator: blue bottom line on all frames when the player cannot
