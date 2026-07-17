@@ -1,5 +1,8 @@
 # SimpleHeal Changelog
 
+## v1.8.2
+- New "Track HoTs" field: list specific spells (e.g. Renew, Power Word: Shield) to show as HoT icons and hide the rest. Leave empty to show all your castable HoTs as before
+
 ## v1.8.1
 - Roles now come only from what players set themselves: LFG role and raid Main Tank/Main Assist assignments. No more class guessing (all warriors showed as tanks, all hybrids as healers)
 - New opt-in "Auto-detect roles" (Advanced): guesses roles from forms and auras (bear/cat form, Shadowform, Moonkin, Righteous Fury) for players without an assigned role

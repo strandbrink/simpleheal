@@ -1013,12 +1013,15 @@ local function Refresh(f)
     -- Single buff pass: collect buff names + HoT tracking in one loop
     wipe(scratchBuffs)
     local hotIdx = 0
+    -- Optional whitelist: only show these spells as HoT icons (empty = all castable)
+    local hotFilter = db.hotFilter and db.hotFilter ~= "" and ParseBuffStr(db.hotFilter) or nil
     if not isDead and not isOffline then
         for i = 1, 40 do
             local bName, bIcon, bCount, _, bDur, bExp = UnitBuff(unit, i)
             if not bName then break end
             scratchBuffs[bName] = (bExp and bExp > 0) and bExp or true
-            if db.showHots ~= false and bDur and bDur > 0 and bExp and KnownSpell(bName) then
+            local trackThis = hotFilter and hotFilter[bName] or (not hotFilter and KnownSpell(bName))
+            if db.showHots ~= false and bDur and bDur > 0 and bExp and trackThis then
                 hotIdx = hotIdx + 1
                 if hotIdx <= 6 then
                     local hot = f.hots[hotIdx]
@@ -2375,6 +2378,32 @@ local function CreateConfigPanel()
         p.buffBoxes[slot] = eb
     end
 
+    -- HoT filter: only show these spells as HoT icons (empty = all castable)
+    local hotFilterTop = buffTop + 4 * rowH + 14
+    local hotFilterHeader = t1:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    hotFilterHeader:SetPoint("TOPLEFT", padX, -hotFilterTop + 14)
+    hotFilterHeader:SetText("Track HoTs")
+    hotFilterHeader:SetTextColor(1, 0.82, 0)
+
+    local hotFilterHint = t1:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hotFilterHint:SetPoint("TOPLEFT", hotFilterHeader, "TOPRIGHT", 6, 0)
+    hotFilterHint:SetText("(empty = all your HoTs)")
+
+    local hotFilterBox = CreateFrame("EditBox", "SimpleHealHotFilter", t1, "InputBoxTemplate")
+    hotFilterBox:SetSize(panelW - padX * 2 - 24, 20)
+    hotFilterBox:SetPoint("TOPLEFT", padX + 8, -hotFilterTop - 8)
+    hotFilterBox:SetAutoFocus(false)
+    hotFilterBox:SetMaxLetters(255)
+    hotFilterBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    hotFilterBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    hotFilterBox:HookScript("OnEditFocusLost", function(self)
+        db.hotFilter = self:GetText() or ""
+    end)
+    AttachAutocomplete(hotFilterBox, true)
+    p.hotFilterBox = hotFilterBox
+    AddTooltip(hotFilterBox, "Track HoTs",
+        "Comma-separated spell names to show as HoT icons (e.g. Renew, Power Word: Shield). Leave empty to show every HoT/buff you can cast.")
+
     ------------------------------------------------
     -- TAB 2: Display
     ------------------------------------------------
@@ -3327,6 +3356,8 @@ local function CreateConfigPanel()
             p.buffBoxes[slot]:SetText("")
             db.buffs[slot] = ""
         end
+        p.hotFilterBox:SetText("")
+        db.hotFilter = ""
         if not InCombatLockdown() then ApplyBindings() end
         UpdateCanCastBuffs()
         UIDropDownMenu_SetText(presetDrop, "-- Choose class/spec --")
@@ -3343,6 +3374,7 @@ local function ShowConfig()
     for slot = 1, 4 do
         configPanel.buffBoxes[slot]:SetText(db.buffs[slot] or "")
     end
+    configPanel.hotFilterBox:SetText(db.hotFilter or "")
     -- Rebuild spellbook list for autocomplete
     RebuildSpellbookNames()
     -- Restore spec selection
@@ -4497,6 +4529,7 @@ local function Init()
     if cdb.buffExpireWarn == nil then cdb.buffExpireWarn = true end
     if cdb.showMana == nil then cdb.showMana = true end
     if cdb.showHots == nil then cdb.showHots = true end
+    if cdb.hotFilter == nil then cdb.hotFilter = "" end
     if cdb.showOOC == nil then cdb.showOOC = true end
     if cdb.smoothBars == nil then cdb.smoothBars = true end
     if cdb.rangeFade == nil then cdb.rangeFade = true end
