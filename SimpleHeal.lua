@@ -690,10 +690,14 @@ local function Refresh(f)
     f.hp:SetMinMaxValues(0, hpMax)
     SetHealthSmooth(f, hp)
 
-    local name = UnitName(unit) or ""
-    local maxLen = math.floor((db.frameW or 90) / 7)
-    if #name > maxLen then name = name:sub(1, maxLen) .. ".." end
-    f.name:SetText(name)
+    if db.showNames == false then
+        f.name:SetText("")
+    else
+        local name = UnitName(unit) or ""
+        local maxLen = math.floor((db.frameW or 90) / 7)
+        if #name > maxLen then name = name:sub(1, maxLen) .. ".." end
+        f.name:SetText(name)
+    end
 
     -- Role icon (only re-anchor when the role actually changes)
     local role = (db.roleIcons ~= false) and GetUnitRole(unit) or "NONE"
@@ -813,7 +817,9 @@ local function Refresh(f)
         end
         local hpMode = db.hpTextMode or 1
         local diff = hp - hpMax
-        if diff < 0 then
+        if hpMode == 4 then
+            f.deficit:SetText("")
+        elseif diff < 0 then
             local frac = hpMax > 0 and hp / hpMax or 0
             local pct = math.floor(frac * 100 + 0.5)
             if hpMode == 2 then
@@ -975,12 +981,23 @@ local function Refresh(f)
         f.mana:Hide()
     end
 
-    -- Aggro indicator
+    -- Threat indicator, colored by how close the unit is to pulling:
+    -- 1 = gaining threat (yellow), 2 = tanking insecurely (orange),
+    -- 3 = tanking securely (red). Level 1 is the healer's early warning to
+    -- pre-cast Blessing of Protection / Salvation / Fade.
     local showAggro = false
     if db.showAggro ~= false and not isDead and not isOffline and UnitThreatSituation then
         local status = UnitThreatSituation(unit)
-        if status and status >= 2 then
+        local minStatus = db.threatWarnings ~= false and 1 or 2
+        if status and status >= minStatus then
             showAggro = true
+            if status == 1 then
+                f.aggroBorder:SetColorTexture(1, 0.9, 0.1, 0.9)
+            elseif status == 2 then
+                f.aggroBorder:SetColorTexture(1, 0.5, 0.1, 0.9)
+            else
+                f.aggroBorder:SetColorTexture(1, 0, 0, 0.9)
+            end
         end
     end
     if showAggro then
@@ -2635,7 +2652,7 @@ local function CreateConfigPanel()
     end)
 
     -- Health text dropdown
-    local HEALTH_MODES = { "Missing health (-1234)", "Percent (87%)", "Both" }
+    local HEALTH_MODES = { "Missing health (-1234)", "Percent (87%)", "Both", "None" }
     local healthLabel = t2:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     healthLabel:SetPoint("TOPLEFT", padX, sliderTop - 260)
     healthLabel:SetText("Health text")
@@ -2791,7 +2808,29 @@ local function CreateConfigPanel()
         RefreshAll()
     end)
     p.cbAggro = cbAggro
-    AddTooltip(cbAggro, "Aggro border", "Shows a red line at the top of frames when a player has threat.")
+    AddTooltip(cbAggro, "Threat border",
+        "Colored line at the top of frames showing threat: yellow = gaining threat, orange = tanking insecurely, red = tanking.")
+
+    local cbThreatWarn = MakeCheckbox(t2, "Early threat warning", padX, cbTop - 224)
+    cbThreatWarn:SetChecked(db.threatWarnings ~= false)
+    cbThreatWarn:SetScript("OnClick", function(self)
+        db.threatWarnings = self:GetChecked() and true or false
+        RefreshAll()
+    end)
+    p.cbThreatWarn = cbThreatWarn
+    AddTooltip(cbThreatWarn, "Early threat warning",
+        "Also show a yellow line for players who are gaining threat but not tanking yet - your cue to pre-cast Blessing of Protection, Salvation or Fade.")
+
+    local cbNames = MakeCheckbox(t2, "Player names", padX, cbTop - 246)
+    cbNames:SetChecked(db.showNames ~= false)
+    cbNames:SetScript("OnClick", function(self)
+        db.showNames = self:GetChecked() and true or false
+        RefreshAll()
+        if testModeActive and not InCombatLockdown() then Layout() end
+    end)
+    p.cbNames = cbNames
+    AddTooltip(cbNames, "Player names",
+        "Shows player names on the frames. Turn off together with Health text 'None' for a pure health bar.")
 
     local cbPetsSep = MakeCheckbox(t2, "Pets in own group", padX + 170, cbTop - 92)
     cbPetsSep:SetChecked(db.petsSeparate or false)
@@ -3418,6 +3457,8 @@ local function ShowConfig()
     configPanel.cbDispelSound:SetChecked(db.dispelSound or false)
     configPanel.cbOOM:SetChecked(db.oomIndicator ~= false)
     configPanel.cbAutoRoles:SetChecked(db.autoDetectRoles or false)
+    configPanel.cbThreatWarn:SetChecked(db.threatWarnings ~= false)
+    configPanel.cbNames:SetChecked(db.showNames ~= false)
     configPanel.sSlider:SetValue(db.spacing or 2)
     for i = 1, 5 do
         local hk = db.hoverKeys and db.hoverKeys[i]
@@ -3887,7 +3928,9 @@ local testPets = {}  -- [ownerIndex] = pet frame
 local function UpdateTestDeficit(f)
     local hp = f.testHP
     local diff = math.floor(hp - TEST_MAX_HP)
-    if diff < 0 then
+    if (db.hpTextMode or 1) == 4 then
+        f.deficit:SetText("")
+    elseif diff < 0 then
         local frac = hp / TEST_MAX_HP
         local pct = math.floor(frac * 100 + 0.5)
         local hpMode = db.hpTextMode or 1
@@ -4088,6 +4131,7 @@ LayoutTestFrames = function()
             f.name:SetTextColor(1, 1, 1)
         end
         f.name:SetFont(FONT_PATH, size, "OUTLINE")
+        f.name:SetText(db.showNames == false and "" or tu.name)
         f.deficit:SetFont(FONT_PATH, size, "OUTLINE")
 
         local showRole = roleIconsOn and (tu.role == "TANK" or tu.role == "HEALER")
@@ -4534,6 +4578,8 @@ local function Init()
     if cdb.smoothBars == nil then cdb.smoothBars = true end
     if cdb.rangeFade == nil then cdb.rangeFade = true end
     if cdb.showAggro == nil then cdb.showAggro = true end
+    if cdb.threatWarnings == nil then cdb.threatWarnings = true end
+    if cdb.showNames == nil then cdb.showNames = true end
     if cdb.showRoleLabels == nil then cdb.showRoleLabels = true end
     if cdb.showMinimap == nil then cdb.showMinimap = true end
     if cdb.petsSeparate == nil then cdb.petsSeparate = false end

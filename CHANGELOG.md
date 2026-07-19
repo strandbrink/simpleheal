@@ -1,5 +1,10 @@
 # SimpleHeal Changelog
 
+## v1.8.3
+- Health text can now be set to "None", and player names have their own toggle - turn both off for a clean health bar with nothing on it
+- Threat border is now color-coded: yellow when a player is gaining threat but not tanking yet, orange when tanking insecurely, red when tanking. The yellow warning is your cue to pre-cast Blessing of Protection, Salvation or Fade
+- New "Early threat warning" option (default on) to disable the yellow gaining-threat level
+
 ## v1.8.2
 - New "Track HoTs" field: list specific spells (e.g. Renew, Power Word: Shield) to show as HoT icons and hide the rest. Leave empty to show all your castable HoTs as before
 
